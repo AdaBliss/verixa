@@ -10,6 +10,11 @@ export {
   type CreateRoleError,
 } from "./application/use-cases/create-role.js";
 export {
+  DefinePermission,
+  type DefinePermissionCommand,
+  type DefinePermissionError,
+} from "./application/use-cases/define-permission.js";
+export {
   Role,
   type CreateRoleParams,
   type OrgId,
