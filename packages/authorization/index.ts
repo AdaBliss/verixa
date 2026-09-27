@@ -22,3 +22,34 @@ export {
   ResourceAttributeResolverRegistry,
   UnknownResourceTypeError,
 } from "./application/services/resource-attribute-resolver-registry.js";
+export {
+  AttributeContext,
+  type AttributeBag,
+  type AttributeCategory,
+  type AttributeValue,
+} from "./domain/value-objects/attribute-context.js";
+export { evaluateCondition, evaluateRule } from "./domain/services/policy-evaluation-engine.js";
+export {
+  deriveRuleOutcomes,
+  denyOverrides,
+  permitOverrides,
+  firstApplicable,
+  type CombiningAlgorithm,
+  type RuleOutcome,
+} from "./domain/services/combining-algorithms.js";
+export {
+  NoRbacGrants,
+  type RbacAuthorizationPort,
+  type RbacDecision,
+} from "./application/ports/rbac-authorization.js";
+export {
+  AuthorizationService,
+  type AuthorizeParams,
+  type AuthorizationEffect,
+  type AuthorizationResult,
+} from "./application/services/authorization-service.js";
+export type { AuthorizationDecision } from "./application/dto/authorization-decision.js";
+export {
+  AuthorizeAction,
+  type AuthorizeActionCommand,
+} from "./application/use-cases/authorize-action.js";
