@@ -295,6 +295,42 @@ The first concrete use case, `RegisterUser`
 the application layer's command-handler pattern: see
 `docs/guides/use-cases.md` for the full shape and rationale.
 
+## Policy domain model as plain data, not a class hierarchy (Issue 141)
+
+`packages/authorization/domain/value-objects/condition.ts` breaks from the
+"private constructor + class" pattern used everywhere else in this guide.
+`Condition` is a discriminated union of frozen plain objects (`{ kind:
+"and", operands: [...] }`, etc.), built through factory functions rather
+than a `Condition` class with `AndCondition`/`OrCondition` subclasses.
+
+The reason is that a condition tree has no behavior to encapsulate at this
+layer — no invariant beyond "well-formed", which the discriminated union's
+type already enforces — and it needs to stay easy to serialize (to JSON, or
+back to DSL text once Issue 143 lands) and easy to compare structurally
+(`Condition.equals`, a plain recursive function over the tree). A class
+hierarchy would add virtual dispatch and `instanceof` checks for no benefit
+here, and would make "is this the same tree" require an `equals` method
+kept in sync on every node subclass instead of one function that pattern-
+matches on `kind`.
+
+`Rule` and `Policy`, by contrast, _do_ use the class-with-private-
+constructor pattern: `Rule.create` enforces "a rule must carry a condition"
+(no code path can construct one with `condition: undefined` — pass
+`Condition.always()` for a rule meant to match unconditionally), and
+`Policy.create` enforces "a policy needs a name, a target with at least one
+action, and at least one rule" as `Result`-returning validation, the same
+way `User.register` does. The dividing line: reach for plain data when a
+type's job is to _be_ a shape (a tree, evaluated later by code that doesn't
+live here); reach for a class when a type's job is to _guard_ a shape
+(an aggregate or value object other code constructs and is meant to trust).
+
+`Policy` is versioned rather than mutable: `publishNewVersion` returns a
+new `Policy` with `version` incremented, never edits the rules of an
+existing instance in place. This is what makes append-only version history
+(a hard requirement once Issue 150 adds persistence) a property of the
+aggregate's own API rather than a rule the repository has to enforce on top
+of a model that would otherwise allow silently rewriting history.
+
 ## MFA Secret Storage (Issue 107)
 
 Unlike passwords, which are one-way hashed using a slow KDF (Argon2), TOTP secrets must be decryptable by the server to compute expected verification codes during login. This fundamental difference requires a separate storage strategy: symmetric encryption (AES-256-GCM) with a managed key.
