@@ -5,6 +5,11 @@ export type {
   UserRoleAssignmentRepository,
 } from "./application/ports/user-role-assignment-repository.js";
 export {
+  CreateRole,
+  type CreateRoleCommand,
+  type CreateRoleError,
+} from "./application/use-cases/create-role.js";
+export {
   Role,
   type CreateRoleParams,
   type OrgId,
