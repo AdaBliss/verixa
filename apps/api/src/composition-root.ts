@@ -2,9 +2,14 @@ import { randomUUID } from "node:crypto";
 
 import {
   AnchorAuditLog,
+  PermissionGrantedAuditSubscriber,
   PrismaAnchorRecordRepository,
   PrismaAuditLogRepository,
+  QueryAuditEvents,
   RecordAuditEvent,
+  RoleAssignedAuditSubscriber,
+  SessionCreatedAuditSubscriber,
+  SessionRevokedAuditSubscriber,
 } from "@verixa/audit";
 import { loadConfig } from "@verixa/config";
 import {
@@ -31,6 +36,7 @@ import {
   SuspendUser,
   UpdateUserProfile,
 } from "@verixa/identity";
+import { type DomainEventPublisher, InMemoryEventPublisher } from "@verixa/shared-kernel";
 import { StellarHashAnchor } from "@verixa/stellar-anchor";
 
 /**
@@ -104,6 +110,7 @@ export interface CredentialUseCases {
 /** Audit recording and its external anchoring. */
 export interface AuditUseCases {
   readonly recordEvent: RecordAuditEvent;
+  readonly queryEvents: QueryAuditEvents;
   /**
    * Present only when an anchoring ledger is configured.
    *
@@ -117,6 +124,7 @@ export interface AuditUseCases {
 
 export interface Container {
   readonly prisma: PrismaClient;
+  readonly eventPublisher: DomainEventPublisher;
   readonly identity: IdentityUseCases;
   readonly credentials: CredentialUseCases;
   readonly audit: AuditUseCases;
@@ -167,6 +175,33 @@ export function buildContainer(prismaClient?: PrismaClient): Container {
   const auditLog = new PrismaAuditLogRepository(prisma.auditLogEntry);
   const anchorRecords = new PrismaAnchorRecordRepository(prisma.anchorRecord, () => randomUUID());
 
+  const recordAuditEvent = new RecordAuditEvent(auditLog, (error: unknown) => {
+    // Written to stderr rather than swallowed entirely: a gap in the audit
+    // log is itself a security-relevant event, and the sequence gap it
+    // leaves is deliberately visible to `verifyChain`.
+    process.stderr.write(
+      `audit write failed: ${error instanceof Error ? error.message : String(error)}
+`,
+    );
+  });
+
+  // Domain event publisher with audit subscribers (Phase 10, Issue 186).
+  // Subscribe to session lifecycle events (SessionCreated, SessionRevoked from Phase 05)
+  // and RBAC events (RoleAssigned, PermissionGranted from Phase 07).
+  const eventPublisher = new InMemoryEventPublisher();
+
+  // Session audit subscribers
+  const sessionCreatedSubscriber = new SessionCreatedAuditSubscriber(recordAuditEvent);
+  const sessionRevokedSubscriber = new SessionRevokedAuditSubscriber(recordAuditEvent);
+  eventPublisher.subscribe("sessions.session.created", (event) => sessionCreatedSubscriber.handle(event));
+  eventPublisher.subscribe("sessions.session.revoked", (event) => sessionRevokedSubscriber.handle(event));
+
+  // RBAC audit subscribers
+  const roleAssignedSubscriber = new RoleAssignedAuditSubscriber(recordAuditEvent);
+  const permissionGrantedSubscriber = new PermissionGrantedAuditSubscriber(recordAuditEvent);
+  eventPublisher.subscribe("rbac.role.assigned", (event) => roleAssignedSubscriber.handle(event));
+  eventPublisher.subscribe("rbac.permission.granted", (event) => permissionGrantedSubscriber.handle(event));
+
   // Anchoring is wired only when a signing key is configured. See AuditUseCases
   // on why this is `undefined` rather than a no-op.
   const anchorSecretKey = process.env["STELLAR_ANCHOR_SECRET_KEY"];
@@ -185,6 +220,7 @@ export function buildContainer(prismaClient?: PrismaClient): Container {
 
   return {
     prisma,
+    eventPublisher,
     identity: {
       registerUser: new RegisterUser(users),
       updateUserProfile: new UpdateUserProfile(users),
@@ -215,15 +251,8 @@ export function buildContainer(prismaClient?: PrismaClient): Container {
       ),
     },
     audit: {
-      recordEvent: new RecordAuditEvent(auditLog, (error: unknown) => {
-        // Written to stderr rather than swallowed entirely: a gap in the audit
-        // log is itself a security-relevant event, and the sequence gap it
-        // leaves is deliberately visible to `verifyChain`.
-        process.stderr.write(
-          `audit write failed: ${error instanceof Error ? error.message : String(error)}
-`,
-        );
-      }),
+      recordEvent: recordAuditEvent,
+      queryEvents: new QueryAuditEvents(auditLog),
       anchor:
         hashAnchor === undefined
           ? undefined

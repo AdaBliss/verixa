@@ -17,7 +17,9 @@ export type {
   AnchorReceiptLike,
   AnchorRecord,
   AnchorRecordRepository,
+  AuditLogFilters,
   AuditLogRepository,
+  FindWithFiltersParams,
   HashAnchorPort,
 } from "./application/ports/audit-log-repository.js";
 
@@ -31,6 +33,23 @@ export {
   RecordAuditEvent,
   type RecordAuditEventCommand,
 } from "./application/use-cases/record-audit-event.js";
+export {
+  QueryAuditEvents,
+  type QueryAuditEventsCommand,
+  type QueryAuditEventsFilters,
+  type QueryAuditEventsResult,
+} from "./application/use-cases/query-audit-events.js";
+
+// Application: subscribers
+export { AuditEventSubscriber } from "./application/subscribers/audit-event-subscriber.js";
+export {
+  SessionCreatedAuditSubscriber,
+  SessionRevokedAuditSubscriber,
+} from "./application/subscribers/session-audit-subscriber.js";
+export {
+  RoleAssignedAuditSubscriber,
+  PermissionGrantedAuditSubscriber,
+} from "./application/subscribers/rbac-audit-subscriber.js";
 
 // Infrastructure
 export {
