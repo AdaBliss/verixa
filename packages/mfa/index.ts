@@ -9,3 +9,5 @@ export * from "./domain/services/backup-code-set.js";
 export * from "./application/use-cases/generate-backup-codes.js";
 export * from "./application/ports/audit-logger.js";
 export * from "./application/use-cases/consume-backup-code.js";
+export { RecoverMfaAccess, type RecoverMfaAccessCommand, type RecoverMfaAccessResult, type RecoverMfaAccessError } from "./application/use-cases/recover-mfa-access.js";
+export type { SessionRevoker } from "./application/ports/session-revoker.js";
