@@ -91,3 +91,83 @@ When a user requests a new set of backup codes, the new set completely replaces 
 
 **Why?**
 We deliberately rejected the alternative of "appending" new codes to an ever-growing pool of valid backup codes. While an additive pool might seem more forgiving if a user finds an old printout, it is insecure: it means a compromised set of codes remains permanently valid unless explicitly revoked by the user, and an attacker who gains temporary access could generate a second set for themselves without alerting the user by breaking the first set. Full-set replacement guarantees that the user always has exactly one authoritative, finite set of codes at any time, and that generating a new set acts as an implicit revocation of any previously compromised or lost sets.
+
+## MFA Enforcement Policy (Issue 114)
+
+### What the policy resolves
+
+For any user, in any organization, the policy engine (`MfaEnforcementPolicy`
+in `packages/mfa/domain/services/mfa-enforcement-policy.ts`) resolves two
+things:
+
+1. **`level`**: `required | optional | disabled`
+2. **`allowedMethods`**: the subset of `["totp", "webauthn", "backup-codes"]`
+   the user may enroll or use
+
+The two fields are resolved independently so an org can say "TOTP only"
+without also mandating MFA for every user — or can mandate MFA while still
+allowing all method types.
+
+### Precedence (highest → lowest)
+
+```
+user override
+  ↓
+role overrides (strictest level wins; intersection of allowed methods wins)
+  ↓
+org override
+  ↓
+global default (env var MFA_ENFORCEMENT_LEVEL / MFA_ALLOWED_METHODS)
+```
+
+The first scope that explicitly sets `level` wins for `level`; the first scope
+that explicitly sets `allowedMethods` wins for `allowedMethods`.
+
+### Why "strictest role wins"
+
+The alternative — letting any role relax enforcement — is insecure. An admin
+could attach a permissive role to themselves to bypass the org's MFA mandate.
+Strictest-wins means adding a role never reduces security; it can only add
+constraints.
+
+### Why intersection for role `allowedMethods`
+
+Same reasoning: union would let a permissive role undo the restrictions of a
+stricter one. Intersection ensures a method must be permitted by *every*
+restricting role to remain allowed.
+
+### `required` with no enrolled methods blocks login
+
+A `required` policy with zero enrolled methods (or with all enrolled methods
+outside `allowedMethods`) causes `isEnrollmentRequired()` to return `true`.
+The login flow (Issue 116) gates on enrollment in that case; it does not
+issue a session. This is what makes the policy non-decorative.
+
+**Alternative considered:** accept the `required` level but silently skip the
+MFA challenge when the user has no enrolled methods, treating it as optional
+in practice.
+
+**Reason rejected:** that makes `required` a best-effort hint rather than a
+security control. If the goal is mandatory MFA for admin roles, a newly
+created admin who has not yet enrolled would bypass the policy on every login
+until they happen to enroll. Blocking and gating on enrollment is the only
+interpretation that makes "required" mean what it says.
+
+### Global defaults live in environment variables
+
+Per-user and per-org config belongs in the database (it is per-tenant and
+there can be millions of rows). The global default, however, is
+deployment-wide and operator-set, so it lives in `MFA_ENFORCEMENT_LEVEL` and
+`MFA_ALLOWED_METHODS` environment variables validated by the typed config
+loader (`packages/config`).
+
+**Alternative considered:** store the global default in the database too,
+as a single "system settings" row.
+
+**Reason rejected:** the config loader validates all settings at startup and
+fails fast with a descriptive error before the process accepts requests. A
+database-stored global default would not be validated until the first request
+that triggered a policy lookup, turning a misconfigured deployment into a
+runtime failure rather than a startup failure. Environment variables are also
+the idiomatic place for operator-supplied deployment configuration in
+twelve-factor applications.

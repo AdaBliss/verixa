@@ -9,3 +9,10 @@ export * from "./domain/services/backup-code-set.js";
 export * from "./application/use-cases/generate-backup-codes.js";
 export * from "./application/ports/audit-logger.js";
 export * from "./application/use-cases/consume-backup-code.js";
+export {
+  MfaEnforcementPolicy,
+  type MfaEnforcementLevel,
+  type MfaEnforcementConfig,
+  type MfaEnforcementContext,
+  type ResolvedMfaPolicy,
+} from "./domain/services/mfa-enforcement-policy.js";

@@ -5,6 +5,4 @@
     "rootDir": "."
   },
   "include": ["index.ts", "domain/**/*", "application/**/*", "infrastructure/**/*", "scripts/**/*"]
-  "compilerOptions": { "outDir": "dist", "rootDir": "." },
-  "include": ["index.ts", "domain/**/*", "application/**/*", "infrastructure/**/*"]
 }
