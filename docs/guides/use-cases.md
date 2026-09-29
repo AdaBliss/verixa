@@ -134,6 +134,12 @@ sense for a user who was actually suspended — so the use case checks
 `user.status === "suspended"` itself before calling `activate()`, rejecting
 a `pending` user even though the domain layer alone would have allowed it.
 
+## Automated Checks & Human-in-the-Loop: `RunAutomatedCheck`
+
+`RunAutomatedCheck` (`packages/verification/application/use-cases/run-automated-check.ts`, Issue 172) illustrates how third-party provider integrations are orchestrated without letting external systems bypass domain governance. The verification provider returns an automated signal (`pass`, `fail`, or `inconclusive`), but the status always lands in `in_review` rather than auto-approving or auto-rejecting. 
+
+We deliberately rejected auto-deciding on provider signals alone in v1: false positives or negatives in automated KYC carry severe real-world consequences, so keeping the human reviewer as the authoritative decision-maker protects users while automated results inform their review.
+
 ## Multi-aggregate transactions: `CreateOrganization`
 
 Every use case up to this point touches one aggregate. `CreateOrganization`
