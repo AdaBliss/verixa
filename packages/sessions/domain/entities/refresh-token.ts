@@ -231,3 +231,4 @@ export class RefreshToken {
     });
   }
 }
+﻿export class RefreshToken {}

@@ -58,3 +58,4 @@ export class SessionExpiryPolicy {
     return asOf > expiresAt;
   }
 }
+﻿export class SessionExpiryPolicy {}
