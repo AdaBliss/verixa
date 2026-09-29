@@ -322,6 +322,28 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.4)(supports-color@7.2.0)
 
+  packages/verification:
+    dependencies:
+      '@verixa/database':
+        specifier: workspace:*
+        version: link:../database
+      '@verixa/shared-kernel':
+        specifier: workspace:*
+        version: link:../shared-kernel
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.4
+      '@vitest/coverage-v8':
+        specifier: ^2.1.9
+        version: 2.1.9(supports-color@7.2.0)(vitest@2.1.9(@types/node@22.20.4)(supports-color@7.2.0))
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.4)(supports-color@7.2.0)
+
   tests:
     devDependencies:
       '@types/node':
