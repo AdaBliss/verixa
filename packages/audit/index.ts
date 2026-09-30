@@ -1,9 +1,9 @@
 // Curated public surface of @verixa/audit. Deep imports are blocked by the
 // boundary rule in eslint.config.mjs — see docs/guides/domain-modeling.md.
 
-// Domain
+// Domain: AuditLogEntry (Phase 01 hash-chained audit log)
 export {
-  type AuditAction,
+  type AuditAction as AuditLogAction,
   AuditLogEntry,
   type AuditLogEntryId,
   type ChainBreak,
@@ -11,7 +11,17 @@ export {
   verifyChain,
 } from "./domain/entities/audit-log-entry.js";
 
-// Application: ports
+// Domain: AuditEvent (Phase 10 structured audit events)
+export { AuditEvent, type AuditEventId } from "./domain/entities/audit-event.js";
+export type {
+  AuditAction,
+  ResourceType,
+  OrganizationId,
+} from "./domain/entities/audit-event.js";
+export { type AuditAction as AuditActionType } from "./domain/value-objects/audit-action.js";
+export { isAuditAction } from "./domain/value-objects/audit-action.js";
+
+// Application: ports (AuditLogRepository - Phase 01)
 export type {
   AnchorFailure,
   AnchorReceiptLike,
@@ -20,6 +30,20 @@ export type {
   AuditLogRepository,
   HashAnchorPort,
 } from "./application/ports/audit-log-repository.js";
+
+// Application: ports (AuditEventRepository - Phase 10)
+export type {
+  AuditEventRepository,
+  AuditEventFilters,
+  PaginationParams,
+  PaginatedAuditEvents,
+  AppendAuditEventError,
+} from "./application/ports/audit-event-repository.js";
+export {
+  databaseUnavailableError,
+  constraintViolationError,
+  unknownAppendError,
+} from "./application/ports/audit-event-repository.js";
 
 // Application: use cases
 export {
