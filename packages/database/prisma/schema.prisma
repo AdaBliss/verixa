@@ -492,6 +492,7 @@ model AuditLogEntry {
 
   @@index([occurredAt])
   @@index([actorId])
+  @@index([subjectId])
   @@map("audit_log_entries")
 }
 
