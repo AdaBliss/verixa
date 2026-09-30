@@ -1,3 +1,9 @@
+// Domain entities and value objects
+export { Session, type SessionId, type UserId } from "./domain/entities/session.js";
+export { SessionExpiryPolicy, type ExpiryMode } from "./domain/value-objects/session-expiry-policy.js";
+
+// Application ports
+export type { SessionRepository } from "./application/ports/session-repository.js";
 /**
  * @verixa/sessions – Session lifecycle, JWT token issuance, revocation, and
  * session-based authentication primitives for Phase 05 and later.
