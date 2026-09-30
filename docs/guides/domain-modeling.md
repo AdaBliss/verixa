@@ -141,6 +141,12 @@ system alone can't — a `User` cannot exist with an invalid status, an
 `OrganizationMembership` cannot be created as a duplicate active membership
 for the same user+organization pair.
 
+### MFA methods as an aggregate family
+
+`MfaMethod` (`packages/mfa/domain/entities/mfa-method.ts`, Phase 06) models a user's enrolled second factor (TOTP, WebAuthn, backup codes). Instead of creating separate entities like `TotpMethod` or `WebAuthnCredential`, they are modeled as a single aggregate family with a `type` field (`MfaMethodType`).
+
+This keeps enrollment and enforcement logic method-agnostic. The core business rule — "a session cannot be issued without satisfying an active MFA challenge" — does not need to know whether the challenge was satisfied by a TOTP code or a hardware key. The `MfaMethod` aggregate handles the common lifecycle (`pending`, `active`, `disabled`) and tracks the `lastUsedAt` timestamp, allowing new factor types to plug into the same enforcement policy engine without modifying the core logic.
+
 ### Status transitions as an explicit table, not scattered `if`s
 
 `User.ALLOWED_TRANSITIONS` names every legal status change up front
@@ -348,3 +354,11 @@ The first concrete use case, `RegisterUser`
 (`packages/identity/application/use-cases/register-user.ts`), establishes
 the application layer's command-handler pattern: see
 `docs/guides/use-cases.md` for the full shape and rationale.
+
+## MFA Secret Storage (Issue 107)
+
+Unlike passwords, which are one-way hashed using a slow KDF (Argon2), TOTP secrets must be decryptable by the server to compute expected verification codes during login. This fundamental difference requires a separate storage strategy: symmetric encryption (AES-256-GCM) with a managed key.
+
+We deliberately rejected hashing for TOTP secrets because the protocol relies on both the client and the server independently computing HMACs over the current time step using a shared plaintext secret. A one-way hash would destroy the secret needed for this computation.
+
+By encrypting the secret at rest in the database, we defend against a compromised database backup or read-only SQL injection: an attacker who gains access to the mfa_methods table cannot generate TOTP codes without also obtaining the application's symmetric encryption key, which is injected via environment variables and never persisted to the database. The PrismaMfaMethodRepository acts as the encryption boundary, ensuring the domain layer (MfaMethod) only ever deals with plaintext secrets while the database only ever holds ciphertext.

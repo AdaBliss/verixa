@@ -97,3 +97,4 @@ export class SessionExpiryPolicy {
     return this.mode === other.mode && this.durationMs === other.durationMs;
   }
 }
+﻿export class SessionExpiryPolicy {}
