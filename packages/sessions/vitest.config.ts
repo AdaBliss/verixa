@@ -12,6 +12,7 @@ export default mergeConfig(
           "**/application/ports/**",
           "index.ts",
           "**/infrastructure/persistence/**",
+          "**/infrastructure/testing/database-harness.ts",
 
       /**
        * The Redis integration spec starts a Testcontainers container, which
