@@ -60,7 +60,12 @@ export default tseslint.config(
     // since its own internal files legitimately import each other by
     // relative path; this rule targets deep imports from *other* packages.
     files: ["**/*.ts"],
-    ignores: ["packages/identity/**", "packages/credentials/**", "packages/sessions/**"],
+    ignores: [
+      "packages/identity/**",
+      "packages/credentials/**",
+      "packages/sessions/**",
+      "packages/authorization/**",
+    ],
     rules: {
       "no-restricted-imports": [
         "error",
