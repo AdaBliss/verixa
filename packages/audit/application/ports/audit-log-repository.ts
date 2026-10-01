@@ -2,6 +2,21 @@ import { DomainError, type Result } from "@verixa/shared-kernel";
 
 import type { AuditLogEntry } from "../../domain/entities/audit-log-entry.js";
 
+export interface AuditLogFilters {
+  readonly actorId?: string | undefined;
+  readonly subjectId?: string | undefined;
+  readonly organizationId?: string | undefined;
+  readonly action?: string | undefined;
+  readonly fromDate?: Date | undefined;
+  readonly toDate?: Date | undefined;
+}
+
+export interface FindWithFiltersParams {
+  readonly filters: AuditLogFilters;
+  readonly fromSequence: number;
+  readonly limit: number;
+}
+
 /**
  * The append protocol's failure mode: someone else extended the chain first.
  *
@@ -97,6 +112,9 @@ export interface AuditLogRepository {
 
   /** Entries from `fromSequence` onward, in order. Used by verification. */
   findFrom(fromSequence: number, limit: number): Promise<readonly AuditLogEntry[]>;
+
+  /** Queries entries with filters and cursor-based pagination. */
+  findWithFilters(params: FindWithFiltersParams): Promise<readonly AuditLogEntry[]>;
 
   /** Total entries in the log. */
   count(): Promise<number>;

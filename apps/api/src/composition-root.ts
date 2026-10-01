@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 
 import {
   AnchorAuditLog,
-  type AuditDelegate,
-  type AuditRecorder,
-  type AuditTransaction,
-  BatchedAuditWriter,
+  PermissionGrantedAuditSubscriber,
   PrismaAnchorRecordRepository,
   PrismaAuditLogRepository,
+  QueryAuditEvents,
   RecordAuditEvent,
+  RoleAssignedAuditSubscriber,
+  SessionCreatedAuditSubscriber,
+  SessionRevokedAuditSubscriber,
 } from "@verixa/audit";
 import { loadConfig } from "@verixa/config";
 import {
@@ -200,13 +201,8 @@ export interface CredentialUseCases {
 
 /** Audit recording and its external anchoring. */
 export interface AuditUseCases {
-  /**
-   * Typed as the `AuditRecorder` port rather than the concrete
-   * `RecordAuditEvent`, because which one is wired is a deployment decision
-   * (Issue #134): `AUDIT_BATCHED_WRITES=1` swaps in the batched writer, and no
-   * route should have to know. See `docs/performance/audit-write-throughput.md`.
-   */
-  readonly recordEvent: AuditRecorder;
+  readonly recordEvent: RecordAuditEvent;
+  readonly queryEvents: QueryAuditEvents;
   /**
    * Present only when an anchoring ledger is configured.
    *
@@ -220,6 +216,7 @@ export interface AuditUseCases {
 
 export interface Container {
   readonly prisma: PrismaClient;
+  readonly eventPublisher: DomainEventPublisher;
   readonly identity: IdentityUseCases;
   readonly credentials: CredentialUseCases;
   readonly audit: AuditUseCases;
@@ -299,7 +296,7 @@ export function buildContainer(
   const auditLog = new PrismaAuditLogRepository(prisma.auditLogEntry, auditTransaction(prisma));
   const anchorRecords = new PrismaAnchorRecordRepository(prisma.anchorRecord, () => randomUUID());
 
-  const logAuditFailure = (error: unknown): void => {
+  const recordAuditEvent = new RecordAuditEvent(auditLog, (error: unknown) => {
     // Written to stderr rather than swallowed entirely: a gap in the audit
     // log is itself a security-relevant event, and the sequence gap it
     // leaves is deliberately visible to `verifyChain`.
@@ -307,39 +304,26 @@ export function buildContainer(
       `audit write failed: ${error instanceof Error ? error.message : String(error)}
 `,
     );
-  };
+  });
 
-  // Batched writes are opt-in (Issue #134). The default keeps the per-event
-  // writer, whose behaviour — an entry is durable before the request returns —
-  // is the one an operator who has not read the throughput document will
-  // assume. Turning batching on trades that for throughput, so it is a
-  // deployment decision and stated as an environment variable, not a code
-  // change at every call site.
-  const batched = process.env["AUDIT_BATCHED_WRITES"] === "1";
-  const batchedWriter = batched
-    ? new BatchedAuditWriter(auditLog, {
-        maxBatchSize: positiveIntFromEnv("AUDIT_MAX_BATCH_SIZE", 100),
-        flushIntervalMs: positiveIntFromEnv("AUDIT_FLUSH_INTERVAL_MS", 250),
-        maxQueueSize: positiveIntFromEnv("AUDIT_MAX_QUEUE_SIZE", 10_000),
-        onOverflow: (report) => {
-          // The overflow *metric*. Refusing to write is correct behaviour, but
-          // it is only defensible if somebody can see it happening.
-          process.stderr.write(
-            `audit queue full: refused "${report.dropped.action}" (${String(report.queueLength)}/${String(report.queueLimit)} pending, ${String(report.overflowedTotal)} refused total)\n`,
-          );
-        },
-        onBatchFailure: (report) => {
-          process.stderr.write(
-            `audit batch lost: ${String(report.commands.length)} entries dropped after ${String(report.attempts)} attempts\n`,
-          );
-        },
-      }).start()
-    : undefined;
+  // Domain event publisher with audit subscribers (Phase 10, Issue 186).
+  // Subscribe to session lifecycle events (SessionCreated, SessionRevoked from Phase 05)
+  // and RBAC events (RoleAssigned, PermissionGranted from Phase 07).
+  const eventPublisher = new InMemoryEventPublisher();
 
-  const recordEvent: AuditRecorder =
-    batchedWriter ?? new RecordAuditEvent(auditLog, logAuditFailure);
+  // Session audit subscribers
+  const sessionCreatedSubscriber = new SessionCreatedAuditSubscriber(recordAuditEvent);
+  const sessionRevokedSubscriber = new SessionRevokedAuditSubscriber(recordAuditEvent);
+  eventPublisher.subscribe("sessions.session.created", (event) => sessionCreatedSubscriber.handle(event));
+  eventPublisher.subscribe("sessions.session.revoked", (event) => sessionRevokedSubscriber.handle(event));
 
-  // Anchoring is wired only when a signer is configured. See AuditUseCases
+  // RBAC audit subscribers
+  const roleAssignedSubscriber = new RoleAssignedAuditSubscriber(recordAuditEvent);
+  const permissionGrantedSubscriber = new PermissionGrantedAuditSubscriber(recordAuditEvent);
+  eventPublisher.subscribe("rbac.role.assigned", (event) => roleAssignedSubscriber.handle(event));
+  eventPublisher.subscribe("rbac.permission.granted", (event) => permissionGrantedSubscriber.handle(event));
+
+  // Anchoring is wired only when a signing key is configured. See AuditUseCases
   // on why this is `undefined` rather than a no-op.
   const stellarNetwork: StellarNetwork =
     process.env["STELLAR_NETWORK"] === "public" ? "public" : "testnet";
@@ -356,6 +340,7 @@ export function buildContainer(
 
   return {
     prisma,
+    eventPublisher,
     identity: {
       registerUser: new RegisterUser(users),
       updateUserProfile: new UpdateUserProfile(users),
@@ -399,7 +384,8 @@ export function buildContainer(
       ),
     },
     audit: {
-      recordEvent,
+      recordEvent: recordAuditEvent,
+      queryEvents: new QueryAuditEvents(auditLog),
       anchor:
         hashAnchor === undefined
           ? undefined
