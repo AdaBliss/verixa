@@ -111,6 +111,7 @@ model User {
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
   mfaMethods              MfaMethod[]
+  sessions                Session[]
 
   @@index([deletedAt])
   @@map("users")
