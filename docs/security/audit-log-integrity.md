@@ -1,168 +1,243 @@
 # Audit Log Integrity
 
-How Verixa's audit trail resists being quietly wrong: the hash chain, what it can and cannot prove, how entries are serialized into logs and exports without letting a recorded value speak for the record, and where retention stands today.
+Verixa's audit log is **append-only and hash-chained**, and it is anchored
+periodically to a public ledger. Those are two different guarantees, obtained
+by two different mechanisms, and neither one is sufficient on its own. This
+document says what each of them buys, what it does not, and how to actually
+run the check.
 
-Related: `docs/security/threat-model-audit.md` (the threat model this document implements), `docs/adr/0003-stellar-audit-anchoring.md` (the external commitment), `docs/guides/stellar-anchoring.md` (operating the anchor).
+## The threat this is written against
 
----
+Not an outside attacker. Someone with **write access to the audit table**: a
+compromised application role, a disgruntled operator, a support engineer with
+production access, or the software itself after a bug. Their goal is not to
+steal the log but to make a particular evening look quiet.
 
-## Two logs, one guarantee
+A plain table of rows cannot defend against that. `DELETE FROM audit_log_entry
+WHERE occurred_at BETWEEN ...` leaves no evidence it happened. Every
+guarantee below exists to answer that one adversary.
 
-`packages/audit` contains two append-only structures, and the difference is not decoration:
+## Guarantee 1 — chaining (tamper-evident to a witness)
 
-|              | `AuditEvent`                                                           | `AuditLogEntry`                                          |
-| :----------- | :--------------------------------------------------------------------- | :------------------------------------------------------- |
-| Purpose      | Structured facts about what happened, queryable by actor/resource/time | A chain where each record commits to its predecessor     |
-| Identity     | `AuditEventId`                                                         | `sequence` + `hash`                                      |
-| Integrity    | Immutability by API shape; no per-row digest                           | SHA-256 over a canonical pre-image, linked               |
-| Metadata     | Validated against a per-action schema (`.strict()`)                    | Bounded flat string bag, length-prefixed into the digest |
-| Written by   | Subscribers on domain events (185, 186)                                | `RecordAuditEvent` (184)                                 |
-| Erasure path | Phase 24                                                               | Phase 24, with the anchored digest retained              |
+Each entry commits to its predecessor:
 
-An event tells you what happened. A chain entry tells you that nobody edited what happened. Both are append-only, and neither has an update or delete method — not because it would be hard to add one, but because a port that offered it would be used by someone in a hurry, and the chain would become decorative.
-
----
-
-## The hash chain
-
-Each entry's digest covers its own content **and** its predecessor's digest:
-
-```
-hash(n) = SHA-256( canonical( sequence, action, actorId, subjectId,
-                             occurredAt, hash(n-1), metadata ) )
+```text
+hash = SHA-256(sequence ‖ action ‖ actorId ‖ subjectId ‖ occurredAt ‖
+                previousHash ‖ sorted metadata)
 ```
 
-The first entry links to `GENESIS_HASH` (64 zeroes) rather than to nothing, so every entry's pre-image has the same shape and verification needs no special case.
+The first entry links to `GENESIS_HASH`, sixty-four zeroes, so the shape of
+every entry's digest is identical and verification needs no special case
+(`packages/audit/domain/entities/audit-log-entry.ts`).
 
-`verifyChain` walks the entries and reports the **first** break, with a reason:
+The canonical form is deliberately reproducible by someone re-deriving it years
+later from the stored columns, possibly in another language: field order is
+fixed, metadata keys are sorted, and fields are newline-separated with the
+count implied by the schema rather than concatenated, so no combination of
+values can produce the same bytes as a different combination.
 
-| Reason            | Meaning                                                 | Typical cause                                              |
-| :---------------- | :------------------------------------------------------ | :--------------------------------------------------------- |
-| `content_altered` | The entry's own hash no longer matches its content      | An edited row, or a canonical-form change nobody versioned |
-| `link_broken`     | The entry is intact but does not follow its predecessor | A row deleted or moved between two that survived           |
-| `sequence_gap`    | Numbering skips                                         | A removal whose links were also repaired                   |
+**What this catches.** Editing one row. The recomputed digest no longer matches
+the stored one, and the check only means anything because it _recomputes_ —
+trusting the stored hash would prove nothing, since whoever edits a row edits
+its hash too.
 
-Only the first break is reported deliberately. Everything after a break is unreliable _because of_ it, and listing the cascade would bury the one fact worth acting on.
+**What this does not catch.** Deleting a row, or rewriting the log from any
+point forward. A rewritten chain is internally consistent and indistinguishable
+from an honest one. Chaining makes tampering evident **to someone who already
+holds an earlier hash**; it does not make tampering impossible.
 
-### Recomputed, never trusted
+That distinction is worth stating plainly, because "we hash-chain our audit
+log" is routinely claimed as though it were the whole answer. It is half of it.
 
-`hasValidHash` derives the digest again from the stored columns rather than comparing a stored hash to itself. A stored hash that is merely read back proves nothing — whoever edited the row would edit the hash too. The check has meaning only because it is derived from content.
+Deletion is caught in the two ways it can be: an entry that no longer links to
+its neighbour (`link_broken`), and a counter that skips (`sequence_gap`). Both
+are reported by verification, below.
 
-### The chain's limit, stated plainly
+## Guarantee 2 — anchoring (tamper-evident to anyone)
 
-An attacker with write access to the table can recompute every hash from the point of their edit onward. The result verifies perfectly. Hash chaining makes the log tamper-**evident to someone holding an earlier hash**; it does not make it tamper-**proof**. Closing that gap requires a commitment somewhere the operator cannot rewrite, which is Issue 190A and ADR-0003.
+Anchoring closes the gap chaining leaves, by moving a commitment somewhere the
+operator cannot rewrite. Periodically the current chain head hash is written
+into a Stellar transaction (ADR 0003, `docs/adr/0003-stellar-audit-anchoring.md`,
+and `docs/guides/stellar-anchoring.md`).
 
----
+Only the hash goes on-chain. The log's contents stay in the operator's database
+and must — publishing audit content to a public ledger would be an irreversible
+leak, and audit records are exactly the records most likely to contain
+something sensitive. A digest proves the records existed, unchanged, while
+revealing nothing about them.
 
-## The canonical form, and why it is length-prefixed
+Anchoring is periodic rather than per-entry because the chain already links
+entries to one another: committing the head commits to everything beneath it at
+once. The interval is the operator's knob — it bounds the window in which
+tampering can go undetected to the time since the last anchor.
 
-The pre-image is versioned:
+## Verification
 
+A property nobody can invoke is not a control. Tamper-evidence only bites when
+someone actually re-hashes the log and compares.
+
+### Running it
+
+```bash
+pnpm audit:verify-chain
 ```
-verixa-audit-v2 <field-count> <len>:<field>|<len>:<field>|...
+
+That builds the workspace packages the tool depends on and runs
+`packages/audit/infrastructure/cli/verify-chain.ts`. It needs a `DATABASE_URL`
+and nothing else — no secret key, no credentials.
+
+```text
+Usage:
+  verify-chain [options]
+
+Options:
+  --from <sequence>        First entry to verify (default: 1, the whole chain)
+  --to <sequence>          Last entry to verify (default: the chain head)
+  --organization <id>      Report how many verified entries belong to this organization
+  --batch-size <n>         Entries per query, 1-5000 (default: 500)
+  --check-anchors          Confirm anchored ranges against the public ledger
+  --limit-anchors <n>      Receipts to consult with --check-anchors (default: 20)
 ```
 
-…with `<len>` the **UTF-8 byte length** of each field, and metadata expanded as `<count>;<len>:<key>=<len>:<value>;…` with keys sorted.
+Typical invocation, as a nightly job or a deploy gate:
 
-The previous form joined fields with newlines. An explicit separator looks like it solves concatenation ambiguity, and it does not — the separator can appear _inside_ a field. `actorId` and `subjectId` are usually supplied from outside the process, so an entry with actor `"a\nb"` and subject `"c"` serialized identically to an entry with actor `"a"` and subject `"b\nc"`. Two different facts, one digest, which inverts the property the chain exists to provide. The same class of bug reappears wherever a value is embedded into a syntax by concatenation, so it is treated as a threat in its own right (T6 in the threat model).
+```bash
+DATABASE_URL="$DATABASE_URL" pnpm audit:verify-chain || alert "audit chain broken"
+```
 
-A declared byte length makes everything inside a field part of that field's content. Nothing there can move a boundary.
+**Exit status is the machine-readable answer**: `0` when the verified range is
+intact and no consulted receipt disagrees, `1` when the chain is broken, a
+receipt disagrees, or the check could not run at all. Read the status, not the
+prose.
 
-Two details that are easy to get wrong:
+Example output:
 
-- **Bytes, not characters.** The digest must be re-derivable years later from the stored columns by somebody not running this code. JavaScript's `.length` counts UTF-16 code units; `é` is 1 character, 2 bytes, and an emoji disagrees again. Byte lengths are the only number other runtimes will reproduce.
-- **Sorted keys.** Otherwise insertion order changes the hash, and "same content, different digest" is the same failure in a subtler costume.
+```text
+chain verification: BROKEN
+  range:     1-4
+  entries:   2 checked
+  head hash: 3f8a…
+  first break at sequence 2: content_altered
+  anchor @4 (stellar:testnet 5f0c…): database matches, ledger matches
+```
 
-### Changing the form changes every digest
+### The same check, in process
 
-Bumping the version changes what a stored hash is compared against: entries written under the old form report `content_altered`. That is not a bug to code around — it is the correct reading of a digest that no longer matches its content. Any future change needs the version to move in the same commit, and needs a note about the historical chains it invalidates.
-
----
-
-## Injection: bounds on input, escaping on output
-
-Metadata is the only part of an entry an outside party usually controls, and it is written to four places that can each misread it: a database column, a hash pre-image, a compliance export, and the application log.
-
-The rule that keeps those honest:
-
-> **Bound what may enter. Neutralize at each boundary where text could be misread. Never rewrite what is stored.**
-
-Sanitizing on input is the rejected alternative, and it is worse twice over: it silently changes the evidence (the hashed value stops being the supplied value), and it teaches the next reader that safety is a property of the _data_ rather than of each _encoder_ — so the next output path, added by someone who did not read this file, forgets to escape.
-
-### On input: bounds (`AuditMetadata.create`)
-
-| Bound            | Value         | Why                                                                                                                                   |
-| :--------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------ |
-| Fields per entry | 32            | A bag with 10,000 keys is an unbounded write amplified into a hash, an index, and an export cell                                      |
-| Key length       | 64            | Keys are column-ish names; longer means something else is being smuggled                                                              |
-| Value length     | 1024          | Every output has to finish sometime                                                                                                   |
-| Value type       | `string` only | Coercing `true`/`"true"` makes them indistinguishable in a query; accepting an object puts `JSON.stringify` shapes into a flat column |
-
-Bounds are checked on input because a bound cannot be imposed later — by the time an exporter is writing a cell, the oversized bag is already the record.
-
-When a bag fails, `RecordAuditEvent` still appends the entry, replacing the metadata with `metadataRejected: <reason>`, where the reason comes from a closed set of strings. Dropping the record is the outcome an attacker wants. A rejected _value_ is never echoed — the message names the bound and the value's type. A rejected _key_ is named, because a caller cannot tell which field broke the bound otherwise, but it is truncated and escaped first, so neither can be used to reflect unsanitized input into a log line.
-
-### On output: one encoder per sink
-
-| Sink                                                    | Treatment                                                          | Why that and not more                                                                                                                                                                                                                                                                                                         |
-| :------------------------------------------------------ | :----------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Stored column / JSON                                    | Verbatim values                                                    | JSON escapes what it encodes; rewriting here destroys evidence for no benefit                                                                                                                                                                                                                                                 |
-| Hash pre-image                                          | Length-prefixed canonical form                                     | Structure cannot be re-shaped by content                                                                                                                                                                                                                                                                                      |
-| Log fields (`toLogFields`, `AuditMetadata.toLogFields`) | `escapeForText`: control characters and `\` become visible escapes | A `\n` would end a record early; `\t` and `\r` are cell and field separators to various tools. Escaping backslash too keeps the map one-to-one, so a reader can reconstruct what was supplied                                                                                                                                 |
-| JSON documents inside text                              | `escapeJsonLineTerminators`, never `escapeForText`                 | JSON.stringify already escapes U+0000–U+001F. It leaves NEL (U+0085) and U+2028/U+2029 raw, and Python's `str.splitlines` treats those as line endings. Running the text escaper over a JSON _document_ instead escapes the backslashes JSON uses for its own escaping, and the result is neither JSON nor the original value |
-| CSV cell                                                | Escape, then quote per RFC 4180, then neutralize a formula prefix  | Quoting alone does not help: Excel evaluates a _quoted_ cell beginning `=`. The classic payload is `=cmd\|'/c calc'!A1`; the attacker does not need the server, only whoever opens the file                                                                                                                                   |
-
-`AuditLogEntry.toLogFields()` is what makes the export's central guarantee provable: **one entry, one line**. Its output cannot contain a character a line-oriented reader would act on, so the number of lines in a file is its record count — the fact an auditor checks by counting, and the one an injected newline destroys.
-
-### Structured logging (following the Issue 008 redaction pattern)
-
-Values go in **fields**, never in the message:
+`VerifyAuditChain` is wired into the API's container as
+`container.audit.verifyChain`, so a scheduler or an admin endpoint can run it
+without spawning a process. The CLI is that use case with argument parsing and
+a report attached; there is no second implementation of the walk to drift.
 
 ```ts
-logger.info({ type: "audit.log.exported", recordCount, filters }, "audit export");
+const result = await container.audit.verifyChain.execute({
+  fromSequence: 1,
+  batchSize: 1_000,
+  checkAnchors: true,
+});
+
+if (Result.isOk(result) && !result.value.valid) {
+  report(result.value.firstBreak);
+}
 ```
 
-`logger.info(\`exported ${count} rows for ${JSON.stringify(filters)}\`)` reads better and is the bug. pino escapes its fields; a message is a message, so a newline inside a filter value lands verbatim and starts a line the application never logged:
+### Reading the result
 
+| Field                    | Meaning                                                                                            |
+| ------------------------ | -------------------------------------------------------------------------------------------------- |
+| `valid`                  | The verified range is intact. False exactly when `firstBreak` is set.                              |
+| `checkedEntries`         | Entries actually inspected — not merely fetched. A log broken at sequence 2 reports 2, not 10,000. |
+| `headHash`               | Head of the verified range. This is the value an anchor commits to.                                |
+| `seededFromWindowStart`  | True when the run began partway into the chain, so the reader knows it did not look at genesis.    |
+| `organizationEntryCount` | How many inspected entries carry that `organizationId`. See the tenancy note below.                |
+| `firstBreak.reason`      | `content_altered`, `link_broken`, or `sequence_gap`.                                               |
+| `anchorChecks`           | One row per receipt consulted, with what each side said.                                           |
+| `anchorsSkipped`         | `--check-anchors` was asked for but no ledger is wired. Reported, not silently empty.              |
+
+The three break reasons describe three different attacks:
+
+- `content_altered` — an entry's content no longer matches its own digest.
+  Someone edited a field.
+- `link_broken` — the entry is intact but does not follow its predecessor.
+  Someone removed a row.
+- `sequence_gap` — the numbering skips. Someone removed a row _and_ repaired
+  the links, but not the counter.
+
+Only the **first** break is reported. Everything after a break is unreliable as
+a consequence of it, and listing the cascade would bury the one fact that
+matters under noise the break itself caused.
+
+### Anchored ranges
+
+With `--check-anchors`, the last N receipts are compared against two
+independent sources:
+
+```text
+anchor @1204 (stellar:testnet 5f0c…): database matches, ledger MISMATCH
 ```
-[2026-10-02T00:00:00.000Z] INFO audit: exported 1 rows for {"actorId":"x
-[2026-10-02T00:00:00.000Z] INFO audit: admin login granted"}
-```
 
-Nobody grepping that file afterwards can tell the injected line from a real one.
+| `matchesDatabaseChain` | `matchesLedger` | What it means                                                                                                                                                               |
+| ---------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| true                   | true            | This database reproduces the hash the public ledger holds. The strongest statement available.                                                                               |
+| false                  | true            | The ledger still commits to what was published, and this database no longer produces it. **History was rewritten after it was anchored.** Report it as an incident.         |
+| true                   | false           | The receipt is wrong: no such commitment exists on the ledger. Either the anchor never landed or `anchor_ref` was edited.                                                   |
+| false                  | false           | Both disagree. Assume the local log and the receipt are both untrustworthy.                                                                                                 |
+| `undefined`            | `undefined`     | The receipt's sequence fell outside the verified range. Absence of evidence, deliberately not reported as a mismatch — a narrow run must not raise a false tampering alarm. |
 
-### Export formats
+The ledger lookup is deliberately a **separate port** (`AnchorVerifierPort`)
+from the anchoring port. Verification reads public data and signs nothing, so
+it needs no secret key: the CLI constructs a throwaway keypair, exactly as
+`packages/stellar-anchor`'s own `verify` command does. A third party with
+nothing but a hash and a transaction reference can run the same check — see
+`docs/guides/stellar-anchoring.md`. That is the point of anchoring externally
+rather than to a second database the operator also controls.
 
-`ExportAuditEvents` writes either:
+If the ledger could not be reached at all, `ledgerError` is set and
+`matchesLedger` stays `undefined`. A failed lookup is a third answer and must
+not be recorded as either of the other two.
 
-- **`jsonl`** — one JSON document per entry, values exactly as recorded. What a program should read, what re-verification should run against.
-- **`csv`** — RFC 4180 quoting, escaped control characters, neutralized formula prefixes, and metadata as a single JSON column that still parses.
+### Tenancy
 
-Both carry `hash` and `previousHash`, so an export can be verified against an anchored digest without a database.
+`--organization` reports how many verified entries belong to a tenant. It does
+**not** restrict the walk, and this is not an oversight.
 
-Every export is capped (`DEFAULT_EXPORT_MAX_RECORDS`) and reports `truncated`. A silently partial compliance file is worse than a refused request: the row count _was_ the evidence. Authorization is not part of this use case — it has no notion of a requesting principal, deliberately, so no call site can half-implement a policy. That is Issue 199.
+`sequence` is global, and each entry's `previousHash` is the entry before it
+regardless of tenant. A filtered subsequence is not a chain: skipping the rows
+in between breaks every link, so an organization-only walk would report
+tampering in a perfectly honest log. Building per-tenant chains would need a
+per-tenant counter and a per-tenant head to anchor, which is a different design
+with its own ADR. Verification therefore walks everything and reports
+membership alongside integrity.
 
----
+### Limits, stated plainly
 
-## Retention
+- **Verification needs the rows.** Re-deriving hashes requires reading the
+  entries, so a third party cannot check the log's contents from the anchor
+  alone. What they can check independently is any given digest — "does this
+  hash appear in this transaction" — which is what makes the anchor honest.
+- **A window is not proof.** `--from 5000 --to 6000` says nothing about a break
+  at sequence 4. `seededFromWindowStart` is there so the result cannot be
+  misread as a clean bill of health for the whole log.
+- **A wholesale rewrite of the tail verifies.** That is what anchoring is for,
+  and it is covered by an explicit test rather than left as a footnote.
+- **`--check-anchors` reaches the network.** Use it where a Horizon endpoint is
+  reachable; without one, the receipts are still compared against the local
+  chain and a lookup failure surfaces as `ledgerError`.
 
-Issue 192 ships the **evaluation seam and nothing else**. `ApplyAuditRetentionPolicy` walks the log with a `RetentionPolicy` (default: seven years, `AgeRetentionPolicy`) and returns the entries past the cutoff, the sequence it evaluated through, and `disposition: "identified_only"`.
+## How this is tested
 
-It deletes nothing, archives nothing, and touches no row. `AuditLogRepository` has no delete method, and that is deliberate. Consequences worth writing down:
+- Unit: `packages/audit/domain/entities/audit-log-entry.spec.ts` (chaining, the
+  three break shapes, and the wholesale-rewrite limit) and
+  `packages/audit/application/use-cases/verify-audit-chain.spec.ts` (windows,
+  batching, tenancy, and anchor comparison against a stand-in ledger).
+- Postgres-backed: `tests/integration/audit-chain-verification.spec.ts`
+  re-derives hashes from rows written by the production append path, then
+  corrupts them with raw `UPDATE` and `DELETE`, and runs the CLI as a
+  subprocess. This is where a mapper, a JSON column, or timestamp precision
+  could make an honest log report itself as tampered.
+- The package runs under a coverage gate (Issue 138) so the walk's branches
+  cannot silently stop being exercised: an untested branch in verification is a
+  security property that quietly does not hold.
 
-- **Archival cannot be bolted on later.** Moving a row out of the table makes `verifyChain` report a gap, and "the log is broken" is not an acceptable answer for a legal hold. The design has to decide _before_ deletion exists.
-- **Erasure and anchoring disagree.** The chain head may already be committed to Stellar, so content can be erased while the digest stays public. The expected Phase 24 shape: erase content, keep the anchored digest, and append an explicit erasure entry so removal is visible rather than mysterious.
-- **The seam is where a policy becomes reviewable.** "Which entries would go?" is a question that can be asked, logged, and argued about in advance — which is the entire value of a hook that does nothing else.
-
----
-
-## Proving it
-
-The behaviours above are pinned by tests that fail without the code:
-
-- `domain/entities/audit-log-entry.spec.ts` — editing, deleting, tail-truncating, and the digest-ambiguity fixtures (a newline in one field must not shift a boundary into the next).
-- `domain/value-objects/audit-metadata.spec.ts` — adversarial fixtures, bound rejections, canonical-form framing, one-to-one escaping.
-- `application/use-cases/export-audit-events.spec.ts` — the full round trip: storage → query → export → structured logging, with a CSV parser independent of the writer.
-- `application/use-cases/apply-audit-retention-policy.spec.ts` — that the review identifies candidates and changes nothing.
-
-Read those fixtures as the catalogue of attacks this design answers. If you add an output path that is not in the table above, add it to the catalogue.
+Database-backed specs skip when no Postgres is reachable, and CI sets
+`REQUIRE_DATABASE_TESTS=1` so a skip becomes a failure rather than a green run
+that checked nothing.
