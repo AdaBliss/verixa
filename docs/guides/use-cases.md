@@ -3,7 +3,7 @@
 `RegisterUser` (`packages/identity/application/use-cases/register-user.ts`,
 Issue 030) is the first concrete example of the **command-handler pattern**
 every use case in Verixa follows: one class, one job, orchestrating domain
-objects and ports without containing business rules of its own.
+events, entities, and ports without containing business rules of its own.
 
 ## The shape
 
@@ -46,18 +46,16 @@ Every use case:
   throughout the domain layer, for the same reason: callers are forced to
   handle failure, and the type signature documents what can go wrong.
 
-## Why use cases are the unit of application logic
+## Cyclic Verification Loops: RequestMoreInformation
 
-A use case is deliberately the _only_ place that orchestrates multiple
-steps against ports and aggregates for a single business operation. The
-alternative — putting that orchestration in an HTTP route handler, or
-spreading it across multiple entity methods — makes the same operation hard
-to test without spinning up the interface layer, and hard to reuse if a
-second interface (a CLI, a background job) needs to trigger the same
-operation later. `RegisterUser.execute()` can be called identically from an
-HTTP handler, a CLI command, or a test, with zero HTTP/CLI-specific code
-inside it.
+`RequestMoreInformation` orchestrates the reviewer-initiated transition from
+`in_review → needs_more_info` requiring an explicit, visible note. This supports
+the non-linear KYC workflow where evidence is insufficient without forcing
+a full new request, preserving prior evidence and history across re-submits.
 
+Alternative rejected: forcing users to create a brand new verification request
+from scratch when a minor document blur occurs. Rejected because it discards
+audit history and creates unnecessary user friction.
 Business _rules_ still live in the domain layer, not here: `RegisterUser`
 doesn't decide what makes an email valid (`Email.create` does) or what
 status a new user starts in (`User.register` does). The use case's job is
