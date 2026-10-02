@@ -13,6 +13,21 @@ export {
 
 // Domain: value objects and services
 export { TotpSecret } from "./domain/value-objects/totp-secret.js";
+export { TotpAlgorithm } from "./domain/services/totp-algorithm.js";
+export * from "./domain/entities/mfa-method.js";
+export * from "./application/ports/mfa-method-repository.js";
+export * from "./infrastructure/persistence/prisma-mfa-method-repository.js";
+export * from "./domain/services/backup-code-set.js";
+export * from "./application/use-cases/generate-backup-codes.js";
+export * from "./application/ports/audit-logger.js";
+export * from "./application/use-cases/consume-backup-code.js";
+export {
+  MfaEnforcementPolicy,
+  type MfaEnforcementLevel,
+  type MfaEnforcementConfig,
+  type MfaEnforcementContext,
+  type ResolvedMfaPolicy,
+} from "./domain/services/mfa-enforcement-policy.js";
 export { StepUpAssertion } from "./domain/value-objects/step-up-assertion.js";
 export type { TotpAlgorithm, TotpSecretLike } from "./domain/services/totp-algorithm.js";
 export { Rfc6238TotpAlgorithm } from "./domain/services/rfc-totp-algorithm.js";
