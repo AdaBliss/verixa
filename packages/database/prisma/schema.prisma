@@ -111,6 +111,8 @@ model User {
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
   mfaMethods              MfaMethod[]
+  verificationRequests    VerificationRequest[]      @relation("VerificationRequestSubject")
+  sessions                Session[]
 
   @@index([deletedAt])
   @@map("users")
@@ -164,8 +166,9 @@ model Organization {
   /// forcing that as a hard database error is the point.
   owner User @relation("OrganizationOwner", fields: [ownerId], references: [id], onDelete: Restrict)
 
-  memberships OrganizationMembership[]
-  invitations Invitation[]
+  memberships          OrganizationMembership[]
+  invitations          Invitation[]
+  verificationRequests VerificationRequest[]  @relation("VerificationRequestOrganization")
 
   @@map("organizations")
 }
@@ -570,4 +573,105 @@ model MfaMethod {
   @@index([userId])
   @@index([userId, status])
   @@map("mfa_methods")
+}
+
+/// Mirrors the VerificationTypeValue union in
+/// packages/verification/domain/value-objects/verification-type.ts. Prisma
+/// enum member names cannot contain a hyphen, so the domain's
+/// `identity-document` is stored as `identity_document`; the one translation
+/// between the two lives in the verification persistence mapper.
+enum VerificationType {
+  identity_document
+  address
+  liveness
+
+  @@map("verification_type")
+}
+
+/// Mirrors the VerificationStatusValue union in
+/// packages/verification/domain/value-objects/verification-status.ts. The
+/// transition table that governs movement between these lives in the domain;
+/// the database only guarantees the column holds one of the six.
+enum VerificationStatus {
+  pending_evidence
+  submitted
+  in_review
+  needs_more_info
+  approved
+  rejected
+
+  @@map("verification_status")
+}
+
+/// The terminal outcomes a review can record. A subset of VerificationStatus:
+/// `needs_more_info` is not a decision, it re-opens the request.
+enum VerificationDecision {
+  approved
+  rejected
+
+  @@map("verification_decision")
+}
+
+/// One subject's request to prove one thing, and the reviewer claim and
+/// decision attached to it. Maps to the `VerificationRequest` aggregate in
+/// packages/verification/domain/entities/verification-request.ts.
+///
+/// `assigned_reviewer_id` is a plain UUID with no `reviewers` table behind it,
+/// because whether the caller is a reviewer at all is Phase 07's RBAC concern;
+/// this column records *which* case a reviewer holds, not whether they may.
+/// Keeping it (and the decided-by column) as bare UUIDs also means a
+/// verification record survives the deletion of the reviewer who handled it,
+/// the same reasoning the audit log uses for its actor/subject columns.
+model VerificationRequest {
+  /// Assigned by the domain (`createId<"VerificationRequestId">()`), never by
+  /// the database. See the equivalent note on `User.id`.
+  id String @id @db.Uuid
+
+  subjectUserId  String @map("subject_user_id") @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  type   VerificationType
+  status VerificationStatus
+
+  /// The reviewer currently holding a (time-bounded) claim, or NULL when the
+  /// case is unclaimed or its claim has lapsed. A claim is a lease, not a
+  /// lock: `claim_expires_at` releases it without a scheduled job.
+  assignedReviewerId String?   @map("assigned_reviewer_id") @db.Uuid
+  assignedAt         DateTime? @map("assigned_at") @db.Timestamptz(3)
+  claimExpiresAt     DateTime? @map("claim_expires_at") @db.Timestamptz(3)
+
+  /// The terminal decision, if one was reached. `decided_by_reviewer_id` is a
+  /// bare UUID for the same reason as `assigned_reviewer_id` above.
+  decidedByReviewerId String?               @map("decided_by_reviewer_id") @db.Uuid
+  decidedAt           DateTime?             @map("decided_at") @db.Timestamptz(3)
+  decision            VerificationDecision?
+  /// The mandatory rationale recorded with a decision. Kept alongside the
+  /// decision so an auditor reading the row does not need a join, and so the
+  /// record answers "why" without a follow-up query.
+  decisionNote        String?              @map("decision_note")
+
+  /// What the reviewer asked for when the request is `needs_more_info`.
+  /// Visible to the subject; NULL in every other state.
+  needsMoreInfoNote String? @map("needs_more_info_note")
+
+  createdAt DateTime @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @map("updated_at") @db.Timestamptz(3)
+
+  /// `Cascade`: a verification request has no meaning once its subject or its
+  /// tenant is gone, and leaving PII-adjacent rows behind after erasure would
+  /// retain exactly the data that needed to go.
+  subject      User         @relation("VerificationRequestSubject", fields: [subjectUserId], references: [id], onDelete: Cascade)
+  organization Organization @relation("VerificationRequestOrganization", fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// "This subject's verification history."
+  @@index([subjectUserId])
+  /// The reviewer queue's ordering key: "oldest in_review first", and the
+  /// status filter that narrows to claimable rows. Composite so the queue
+  /// query can be served by the index alone.
+  @@index([status, createdAt])
+  /// Tenant-scoped listings (row-level security scopes every read by org).
+  @@index([organizationId])
+  /// "Does this reviewer hold an active claim?" — the one-at-a-time check.
+  @@index([assignedReviewerId, claimExpiresAt])
+  @@map("verification_requests")
 }

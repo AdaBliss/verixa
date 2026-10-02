@@ -217,3 +217,31 @@ persists it — the "send the email with this token" step is simply not
 implemented anywhere yet, which is a different thing from being designed
 wrong. See `docs/guides/domain-modeling.md` for the general principle this
 follows.
+
+## Use cases that delegate their rules: the review flow
+
+`ClaimNextReviewCase`, `ApproveVerification`, `RejectVerification` and
+`RequestMoreInformation` (Issues 174 and 175, plus Issue 176's loop) are
+notably thin, on purpose.
+
+`ClaimNextReviewCase` owns only the policy it _can_ own — the claim lease
+length, and whether a reviewer already holding a case may be handed another.
+The guarantee that two reviewers never receive the same case cannot be
+enforced in application code at all: it is enforced by the repository, with
+`SELECT ... FOR UPDATE SKIP LOCKED` over the candidate row, because an
+application-level read-then-write always leaves a window in which two callers
+read the same unclaimed row. The use case returns `claimed` / `none` /
+`already_claiming` rather than throwing, because an empty queue is an ordinary
+outcome, not an error.
+
+The decision use cases are thin for the opposite reason: they add _no_ rules
+of their own beyond one — the mandatory rationale note. Transition legality,
+and "only the reviewer holding the active claim may decide", live on the
+aggregate, which owns the state machine and the claim. Duplicating either here
+would create a second place the rules are encoded, and therefore a second
+place they can disagree. The one rule that _is_ here — a non-empty note — is
+here for the same reason `SuspendUser`'s reason is: it is about what this
+specific administrative action is allowed to omit, not about what a
+`VerificationRequest` structurally requires. See
+`docs/security/authentication-flows.md` for the reviewer-decision
+cross-reference.

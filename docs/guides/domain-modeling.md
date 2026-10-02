@@ -506,3 +506,13 @@ Unlike passwords, which are one-way hashed using a slow KDF (Argon2), TOTP secre
 We deliberately rejected hashing for TOTP secrets because the protocol relies on both the client and the server independently computing HMACs over the current time step using a shared plaintext secret. A one-way hash would destroy the secret needed for this computation.
 
 By encrypting the secret at rest in the database, we defend against a compromised database backup or read-only SQL injection: an attacker who gains access to the mfa_methods table cannot generate TOTP codes without also obtaining the application's symmetric encryption key, which is injected via environment variables and never persisted to the database. The PrismaMfaMethodRepository acts as the encryption boundary, ensuring the domain layer (MfaMethod) only ever deals with plaintext secrets while the database only ever holds ciphertext.
+
+## Review Queue Assignment & Optimistic Leases (Issue 173)
+
+When managing human review queues for identity verification requests, preventing two reviewers from working the same case simultaneously is critical. We modeled this using an explicit `ReviewAssignment` value object/entity that implements an **optimistic lease** (time-bounded claim) rather than a permanent lock.
+
+### Why Time-Bounded Claims vs. Permanent Locking
+
+We rejected the alternative of permanent locking (assigning a case to a reviewer until they explicitly release or complete it) because human workflows are prone to abrupt session terminations — a reviewer's browser crashes, their VPN drops, or they close their laptop mid-shift. Under a permanent lock model, a case claimed by a disconnected reviewer becomes permanently stuck, requiring manual intervention by an administrator to unblock.
+
+An optimistic lease with an explicit `claimExpiresAt` timestamp solves this by automatically releasing stale claims back to the queue when the lease expires. If a reviewer is actively working on a case, their session can periodically extend the claim; if they abandon the case or lose connectivity, the claim naturally lapses, making the verification request available for other reviewers without administrative overhead. This balances strict contention control (preventing double-work while active) with resilience against worker failure.
