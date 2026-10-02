@@ -1,99 +1,210 @@
-import { createId, type Id, Result, ValidationError } from "@verixa/shared-kernel";
-
-import type { MfaMethodType } from "../value-objects/mfa-method-type.js";
+import { createId, type Id } from "@verixa/shared-kernel";
 
 export type MfaMethodId = Id<"MfaMethodId">;
 export type UserId = Id<"UserId">;
+export type MfaMethodType = "totp" | "webauthn" | "backup_codes";
 export type MfaMethodStatus = "pending" | "active" | "disabled";
 
-interface MfaMethodProps {
-  readonly id: MfaMethodId;
-  readonly userId: UserId;
-  readonly type: MfaMethodType;
-  readonly status: MfaMethodStatus;
-  readonly createdAt: Date;
-  readonly lastUsedAt?: Date | undefined;
+/** Minimal shape of a generated TOTP secret; structural so a plain object is assignable. */
+export interface TotpSecretLike {
+  readonly value: string;
 }
 
-export class MfaMethod {
+export interface MfaMethodProps {
   readonly id: MfaMethodId;
   readonly userId: UserId;
   readonly type: MfaMethodType;
   readonly status: MfaMethodStatus;
+  readonly secret: string | null;
+  readonly lastUsedAt: Date | null;
   readonly createdAt: Date;
-  readonly lastUsedAt: Date | undefined;
+  readonly updatedAt: Date;
+  readonly failedAttempts: number;
+  readonly lockedUntil: Date | null;
+  readonly lastUsedStep: number | null;
+}
+
+/** Consecutive failed challenges tolerated before an exponential lockout begins. */
+const LOCKOUT_THRESHOLD = 5;
+/** Floor for the exponential backoff, and its ceiling (see `recordFailedAttempt`). */
+const LOCKOUT_BASE_MS = 60 * 1_000;
+const MAX_LOCKOUT_MS = 60 * 60 * 1_000;
+
+/**
+ * A second factor enrolled by a user.
+ *
+ * This aggregate was reconciled from three independently-developed branches
+ * (TOTP enrollment, MFA persistence, and a domain value-object attempt) that
+ * each defined their own version of this class. The union of their behaviour is
+ * preserved here: the mutable, well-behaved transitions the TOTP use cases
+ * need (rate limiting and replay protection) and the load/create/updateSecret
+ * helpers the persistence adapter needs.
+ *
+ * Transitions mutate the instance and return `this` so callers may either chain
+ * (`method.activate().recordUse(step)`) or ignore the return value — the two
+ * call styles the surviving call sites use.
+ */
+export class MfaMethod {
+  private props: MfaMethodProps;
 
   private constructor(props: MfaMethodProps) {
-    this.id = props.id;
-    this.userId = props.userId;
-    this.type = props.type;
-    this.status = props.status;
-    this.createdAt = props.createdAt;
-    this.lastUsedAt = props.lastUsedAt;
+    this.props = props;
   }
 
-  static enroll(params: { userId: UserId; type: MfaMethodType }): MfaMethod {
+  public get id(): MfaMethodId {
+    return this.props.id;
+  }
+  public get userId(): UserId {
+    return this.props.userId;
+  }
+  public get type(): MfaMethodType {
+    return this.props.type;
+  }
+  public get status(): MfaMethodStatus {
+    return this.props.status;
+  }
+  public get secret(): string | null {
+    return this.props.secret;
+  }
+  public get lastUsedAt(): Date | null {
+    return this.props.lastUsedAt;
+  }
+  public get createdAt(): Date {
+    return this.props.createdAt;
+  }
+  public get updatedAt(): Date {
+    return this.props.updatedAt;
+  }
+  public get failedAttempts(): number {
+    return this.props.failedAttempts;
+  }
+  public get lockedUntil(): Date | null {
+    return this.props.lockedUntil;
+  }
+  public get lastUsedStep(): number | null {
+    return this.props.lastUsedStep;
+  }
+
+  /** Enrolls a new method in the `pending` state. */
+  public static create(
+    userId: UserId,
+    type: MfaMethodType,
+    secret: string | null = null,
+    now: Date = new Date(),
+  ): MfaMethod {
     return new MfaMethod({
       id: createId<"MfaMethodId">(),
-      userId: params.userId,
-      type: params.type,
+      userId,
+      type,
       status: "pending",
-      createdAt: new Date(),
+      secret,
+      lastUsedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      failedAttempts: 0,
+      lockedUntil: null,
+      lastUsedStep: null,
     });
   }
 
-  static reconstitute(props: MfaMethodProps): MfaMethod {
+  /**
+   * Enrolls a pending TOTP method, storing the base32 secret as a plain string.
+   * Only the value is persisted; the provisioning URI is derived on demand.
+   */
+  public static createPendingTotp(
+    userId: UserId,
+    secret: TotpSecretLike,
+    now: Date = new Date(),
+  ): MfaMethod {
+    return MfaMethod.create(userId, "totp", secret.value, now);
+  }
+
+  /** Rehydrates a method from persistence. */
+  public static load(props: MfaMethodProps): MfaMethod {
     return new MfaMethod(props);
   }
 
-  activate(): Result<MfaMethod, ValidationError> {
-    if (this.status === "active") {
-      return Result.err(
-        new ValidationError(`Method is already active.`, { status: ["invalid_state"] }),
-      );
+  /** Moves a `pending` or `disabled` method to `active`, clearing any lockout. */
+  public activate(now: Date = new Date()): this {
+    if (this.props.status === "active") {
+      throw new Error("Method is already active.");
     }
-    return Result.ok(
-      new MfaMethod({
-        ...this,
-        status: "active",
-      }),
-    );
+    this.props = {
+      ...this.props,
+      status: "active",
+      failedAttempts: 0,
+      lockedUntil: null,
+      updatedAt: now,
+    };
+    return this;
   }
 
-  disable(): Result<MfaMethod, ValidationError> {
-    if (this.status === "disabled") {
-      return Result.err(
-        new ValidationError(`Method is already disabled.`, { status: ["invalid_state"] }),
-      );
+  /** Disables an enrolled method. A disabled method cannot satisfy a challenge. */
+  disable(now: Date = new Date()): this {
+    if (this.props.status === "disabled") {
+      throw new Error("Method is already disabled.");
     }
-    return Result.ok(
-      new MfaMethod({
-        ...this,
-        status: "disabled",
-      }),
-    );
+    this.props = { ...this.props, status: "disabled", updatedAt: now };
+    return this;
   }
 
-  recordUse(): Result<MfaMethod, ValidationError> {
-    if (this.status === "pending") {
-      return Result.err(
-        new ValidationError(`A pending MFA method cannot satisfy a challenge.`, {
-          status: ["pending_cannot_challenge"],
-        }),
-      );
+  /** Replaces the stored secret (used when regenerating backup codes). */
+  updateSecret(secret: string, now: Date = new Date()): this {
+    this.props = { ...this.props, secret, updatedAt: now };
+    return this;
+  }
+
+  /** Clears the stored secret without deleting the method (Issue 118 recovery). */
+  clearSecret(now: Date = new Date()): this {
+    this.props = { ...this.props, secret: null, updatedAt: now };
+    return this;
+  }
+
+  /** Whether the method is currently rate-limited at `now`. */
+  isLockedAt(now: Date = new Date()): boolean {
+    return this.props.lockedUntil !== null && now < this.props.lockedUntil;
+  }
+
+  /**
+   * Records a failed challenge. Once {@link LOCKOUT_THRESHOLD} consecutive
+   * failures accumulate, the method is locked for an exponentially increasing
+   * duration (capped at one hour) — the 6-digit code space is small enough that
+   * unthrottled guessing within a 30-second window is trivial.
+   */
+  recordFailedAttempt(now: Date = new Date()): this {
+    const attempts = this.props.failedAttempts + 1;
+    const exponent = attempts - LOCKOUT_THRESHOLD;
+    const lockedUntil =
+      exponent >= 0
+        ? new Date(now.getTime() + Math.min(LOCKOUT_BASE_MS * 2 ** exponent, MAX_LOCKOUT_MS))
+        : null;
+
+    this.props = { ...this.props, failedAttempts: attempts, lockedUntil, updatedAt: now };
+    return this;
+  }
+
+  /**
+   * Records a successful challenge at a particular TOTP time step.
+   *
+   * Rejects replays: clock-drift tolerance widens the window in which a single
+   * code is valid, so a code whose step is not strictly greater than the last
+   * consumed step is refused. Resets the failure counter on success.
+   */
+  recordUse(matchedStep: number, now: Date = new Date()): this {
+    if (this.props.status !== "active") {
+      throw new Error("Only active methods can be used for verification.");
     }
-    if (this.status === "disabled") {
-      return Result.err(
-        new ValidationError(`A disabled MFA method cannot satisfy a challenge.`, {
-          status: ["disabled_cannot_challenge"],
-        }),
-      );
+    if (this.props.lastUsedStep !== null && matchedStep <= this.props.lastUsedStep) {
+      throw new Error("Replay detected: step has already been consumed.");
     }
-    return Result.ok(
-      new MfaMethod({
-        ...this,
-        lastUsedAt: new Date(),
-      }),
-    );
+    this.props = {
+      ...this.props,
+      lastUsedAt: now,
+      failedAttempts: 0,
+      lockedUntil: null,
+      lastUsedStep: matchedStep,
+      updatedAt: now,
+    };
+    return this;
   }
 }
