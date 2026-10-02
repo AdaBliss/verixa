@@ -146,6 +146,59 @@ has no way to also create an unrelated `OrganizationMembership`) or inside
 `OrganizationMembership.create` (which doesn't construct organizations).
 Only the use case sees both, so only the use case can enforce it.
 
+## The Policy Decision Point: `AuthorizeAction`
+
+`AuthorizeAction` (`packages/authorization/application/use-cases/authorize-action.ts`,
+Issue 153) follows the same command-handler shape as every use case above,
+but is worth calling out on its own: it's the **Policy Decision Point**
+(PDP, in XACML terminology) — the one canonical "can this subject do this
+action on this resource" entry point every other context and route handler
+is meant to call, rather than each writing its own ad hoc authorization
+check. The **Policy Enforcement Points** that call it from route handlers
+are Phase 12's job; this use case's job is only to decide, not to enforce.
+
+```ts
+const decision = await authorizeAction.execute({
+  subjectId: user.id,
+  action: "read",
+  resourceType: "document",
+  resourceId: document.id,
+});
+
+if (!decision.granted) {
+  throw new ForbiddenError(decision.reason);
+}
+```
+
+It wraps `AuthorizationService` (`docs/security/authorization-model.md`)
+and has no HTTP/Fastify dependency, like every use case — callable
+identically from a route handler, a CLI command, or a test.
+
+### The decision always carries a reason
+
+`AuthorizationDecision.reason` is populated on every path — granted, denied
+by a policy, denied by RBAC, denied by the fail-closed default, _and_ a
+resource-attribute resolution failure — and is written to be sufficient for
+audit logging (Phase 10) on its own. This matters because an audit log
+entry that only records `granted: false` answers "what happened" but not
+"why," and reconstructing "why" later means re-running the same check
+against whatever state existed at the time — which may no longer be
+recoverable. Populating `reason` at decision time, once, while every input
+that produced it is still in hand, is cheaper and more reliable than trying
+to recover it after the fact.
+
+### The policy-error path: fail closed, not fail open
+
+If a `ResourceAttributeResolverRegistry` is wired in and the registered
+resolver for a resource type throws (an upstream lookup failure, say),
+`AuthorizeAction` does not skip resource-attribute resolution and evaluate
+against whatever it has — it denies, with a reason naming the failure. The
+alternative (proceeding with an incomplete attribute set) would silently
+evaluate `DENY` rules that reference the unresolved attributes as though
+they simply didn't match, which can turn an infrastructure failure into a
+silent over-grant. This is the same fail-closed principle
+`docs/security/authorization-model.md` applies one layer down.
+
 There's no real database transaction wrapping the two `save` calls yet —
 there's no database until Phase 03. What exists today is the _boundary_:
 the use case defines exactly which operations must be atomic together, so
@@ -166,3 +219,31 @@ persists it — the "send the email with this token" step is simply not
 implemented anywhere yet, which is a different thing from being designed
 wrong. See `docs/guides/domain-modeling.md` for the general principle this
 follows.
+
+## Use cases that delegate their rules: the review flow
+
+`ClaimNextReviewCase`, `ApproveVerification`, `RejectVerification` and
+`RequestMoreInformation` (Issues 174 and 175, plus Issue 176's loop) are
+notably thin, on purpose.
+
+`ClaimNextReviewCase` owns only the policy it _can_ own — the claim lease
+length, and whether a reviewer already holding a case may be handed another.
+The guarantee that two reviewers never receive the same case cannot be
+enforced in application code at all: it is enforced by the repository, with
+`SELECT ... FOR UPDATE SKIP LOCKED` over the candidate row, because an
+application-level read-then-write always leaves a window in which two callers
+read the same unclaimed row. The use case returns `claimed` / `none` /
+`already_claiming` rather than throwing, because an empty queue is an ordinary
+outcome, not an error.
+
+The decision use cases are thin for the opposite reason: they add _no_ rules
+of their own beyond one — the mandatory rationale note. Transition legality,
+and "only the reviewer holding the active claim may decide", live on the
+aggregate, which owns the state machine and the claim. Duplicating either here
+would create a second place the rules are encoded, and therefore a second
+place they can disagree. The one rule that _is_ here — a non-empty note — is
+here for the same reason `SuspendUser`'s reason is: it is about what this
+specific administrative action is allowed to omit, not about what a
+`VerificationRequest` structurally requires. See
+`docs/security/authentication-flows.md` for the reviewer-decision
+cross-reference.
