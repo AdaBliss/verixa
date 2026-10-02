@@ -535,3 +535,8 @@ belongs.
 - `docs/security/password-storage.md` — argon2id parameters, the PHC format,
   and why the hash is self-describing.
 - `docs/security/token-storage.md` — how tokens are stored once they exist.
+- `docs/guides/use-cases.md` — the reviewer-decision use cases, why a
+  rationale note is mandatory on every approval or rejection, and why the
+  claim and status-transition rules live on the aggregate rather than in the
+  use case. A verification decision is recorded attribution plus reason for
+  the same auditability this document argues for on the authentication side.
