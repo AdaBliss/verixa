@@ -32,6 +32,7 @@ export const {
   OrganizationStatus,
   Prisma,
   PrismaClient,
+  SessionStatus,
   UserStatus,
   VerificationDecision,
   VerificationStatus,
@@ -52,6 +53,7 @@ export type MembershipStatus =
   (typeof prismaRuntime.MembershipStatus)[keyof typeof prismaRuntime.MembershipStatus];
 export type OrganizationStatus =
   (typeof prismaRuntime.OrganizationStatus)[keyof typeof prismaRuntime.OrganizationStatus];
+export type SessionStatus = (typeof prismaRuntime.SessionStatus)[keyof typeof prismaRuntime.SessionStatus];
 export type UserStatus = (typeof prismaRuntime.UserStatus)[keyof typeof prismaRuntime.UserStatus];
 export type VerificationDecision =
   (typeof prismaRuntime.VerificationDecision)[keyof typeof prismaRuntime.VerificationDecision];
@@ -78,6 +80,7 @@ export type {
   Invitation as InvitationRow,
   Organization as OrganizationRow,
   OrganizationMembership as OrganizationMembershipRow,
+  Session as SessionRow,
   User as UserRow,
   MfaMethod as MfaMethodRow,
   VerificationRequest as VerificationRequestRow,
