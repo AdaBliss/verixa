@@ -1,8 +1,4 @@
-import type {
-  DomainEvent,
-  DomainEventHandler,
-  DomainEventPublisher,
-} from "@verixa/shared-kernel";
+import type { DomainEvent, DomainEventHandler, DomainEventPublisher } from "@verixa/shared-kernel";
 
 import { RecordAuditEvent } from "../../application/use-cases/record-audit-event.js";
 import type { AuditAction } from "../../domain/entities/audit-log-entry.js";

@@ -1,8 +1,4 @@
-import type {
-  DomainEvent,
-  DomainEventHandler,
-  DomainEventPublisher,
-} from "@verixa/shared-kernel";
+import type { DomainEvent, DomainEventHandler, DomainEventPublisher } from "@verixa/shared-kernel";
 import { describe, expect, it } from "vitest";
 
 import type { AuditLogRepository } from "../../application/ports/audit-log-repository.js";
@@ -89,6 +85,7 @@ describe("IdentityCredentialsAuditSubscriber", () => {
       findLatest: () => Promise.reject(new Error("audit store unavailable")),
       append: () => Promise.resolve(),
       findFrom: () => Promise.resolve([]),
+      findWithFilters: () => Promise.resolve([]),
       count: () => Promise.resolve(0),
     };
     const record = new RecordAuditEvent(repository, (error) => errors.push(error));
