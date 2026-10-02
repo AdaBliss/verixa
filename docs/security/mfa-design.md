@@ -115,6 +115,33 @@ When a user requests a new set of backup codes, the new set completely replaces 
 **Why?**
 We deliberately rejected the alternative of "appending" new codes to an ever-growing pool of valid backup codes. While an additive pool might seem more forgiving if a user finds an old printout, it is insecure: it means a compromised set of codes remains permanently valid unless explicitly revoked by the user, and an attacker who gains temporary access could generate a second set for themselves without alerting the user by breaking the first set. Full-set replacement guarantees that the user always has exactly one authoritative, finite set of codes at any time, and that generating a new set acts as an implicit revocation of any previously compromised or lost sets.
 
+## Admin-Assisted MFA Recovery
+
+When a user loses all enrolled MFA methods and exhausts backup codes, an administrator can restore access via the `RecoverMfaAccess` use case.
+
+### What the flow does
+
+1. Validates that a distinct, authenticated admin actor (`actorAdminId`) and a human-readable `reason` are present.
+2. Emits an `mfa.recovery.initiated` audit entry **before** any mutation, so the record is durable even if the process dies mid-execution.
+3. Loads all active **and** pending MFA methods for the target user and disables each one via `MfaMethod.disable()`. Pending methods are cleared too — a pending TOTP secret is still a phishable secret.
+4. Revokes all active sessions for the target user via the `SessionRevoker` port, preventing an attacker who engineered the recovery from riding an existing session.
+5. Emits an `mfa.recovery.completed` audit entry with `methodsCleared` and `sessionsRevoked` counts.
+
+### Why methods are disabled, not deleted
+
+Disabling preserves the audit trail. A later investigation can see which methods existed, when they were created, and when they were disabled. Hard-deleting would destroy that evidence.
+
+### Why the flow cannot be self-triggered
+
+An MFA recovery that a user can initiate themselves is an MFA bypass: knowing the password is sufficient to skip the second factor. Requiring a distinct authenticated admin actor — whose own authentication is separately gated — closes that hole. The use case enforces this at the contract level by rejecting an empty `actorAdminId`.
+
+### Re-enrollment on next login
+
+This use case only disables old methods and revokes sessions. On next login the enforcement policy (Issue 114) detects no active methods under a `required` policy and gates on re-enrollment. The recovery use case does not need to know about that flow.
+
+### Port design: SessionRevoker
+
+`SessionRevoker` is defined as a port interface in `packages/mfa/application/ports/session-revoker.ts` rather than importing directly from `@verixa/sessions`. This keeps `@verixa/mfa` free of a session-layer dependency and lets the application host wire in any adapter without creating a circular package dependency.
 ## MFA Enforcement Policy (Issue 114)
 
 ### What the policy resolves
