@@ -69,6 +69,29 @@ Clock-drift tolerance is a usability necessity (phones and servers rarely agree 
 *Reason rejected:* Accepting a code unconditionally enables immediate replay attacks within the 30-90 second validity window. If a user enters their code on a compromised network or phishing proxy, the attacker could reuse the same code milliseconds later. By persisting the \lastUsedStep\ on the \MfaMethod\ and strictly rejecting any authentication attempt that maps to a step less than or equal to it, we completely neutralize replay attacks within the drift window.
 # MFA Design & Security Properties
 
+## Step-up Authentication
+
+Sensitive actions (such as changing an email address, disabling MFA, or performing administrative operations) require re-verification of an active multi-factor authentication method even if the user already holds a valid session.
+
+### Short-Lived Claims and Scoped Enforcement
+
+Rather than issuing a full new session token or requiring complete re-authentication, Verixa issues a short-lived `stepUpVerifiedAt` assertion scoped narrowly in time (e.g., maximum age of 5 minutes).
+
+**Why we implement step-up authentication instead of full re-login or raw session reuse:**
+- *Session possession alone is insufficient:* A long-lived session token can be vulnerable to theft or unauthorized access if a user leaves a device unlocked (e.g., at a shared workstation or unattended laptop). High-risk operations like changing account credentials or disabling security boundaries require explicit, fresh proof of user presence rather than passive session possession.
+- *Avoiding full re-login friction:* Forcing a user to re-enter their primary password and complete a full credential login flow for minor administrative tasks degrades UX unnecessarily. Step-up auth re-verifies only the second factor or backup code challenge, confirming active presence without invalidating or re-issuing the broader session token.
+
+**Alternative rejected:** Full re-login or issuing an entirely new session on high-risk actions.
+*Reason rejected:* Full re-login tears down client state, forces refresh token rotation prematurely, and complicates single-page app token management. Scoping a `stepUpVerifiedAt` timestamp directly onto the existing active `Session` aggregate provides a precise, audit-logged guarantee without disrupting overall session continuity.
+
+### Reuse of Verification Use Cases
+
+Step-up authentication reuses the core verification logic for TOTP and backup codes rather than duplicating cryptographic or validation code across multiple endpoints. The step-up use case validates the submitted factor against the active method repository, records rate-limiting / failure counters on incorrect attempts, and stamps the verified timestamp upon success.
+
+### Staleness Rejection and Expiry Policy
+
+Any step-up assertion whose age exceeds the configured maximum age threshold (checked via `isStepUpFresh(maxAgeMs, now)`) is strictly rejected by the enforcement policy. This ensures that a step-up verification performed for one sensitive action cannot be chained indefinitely across subsequent high-risk requests without re-assertion.
+
 ## Backup Codes
 
 Backup codes provide a critical recovery path for users who lose access to their primary second factors (like a TOTP device or passkey). 
