@@ -58,6 +58,19 @@ export {
   type RecordAuditEventCommand,
 } from "./application/use-cases/record-audit-event.js";
 export {
+  AgeRetentionPolicy,
+  DEFAULT_RETENTION_POLICY,
+  DEFAULT_RETENTION_WINDOW_DAYS,
+  type RetentionPolicy,
+  type RetentionWindow,
+} from "./application/ports/retention-policy.js";
+export {
+  ApplyAuditRetentionPolicy,
+  type ApplyRetentionPolicyCommand,
+  type RetentionCandidate,
+  type RetentionReview,
+} from "./application/use-cases/apply-audit-retention-policy.js";
+export {
   QueryAuditEvents,
   type QueryAuditEventsCommand,
   type QueryAuditEventsFilters,
