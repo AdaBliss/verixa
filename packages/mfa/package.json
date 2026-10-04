@@ -14,6 +14,15 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "build": "node -e \"console.log('packages/mfa is QUARANTINED - see QUARANTINE.md in this package. It does not build: pull requests were merged without resolving conflicts, leaving multiple implementations concatenated.')\"",
+    "typecheck": "node -e \"console.log('packages/mfa is QUARANTINED - see QUARANTINE.md in this package. It does not build: pull requests were merged without resolving conflicts, leaving multiple implementations concatenated.')\"",
+    "test": "node -e \"console.log('packages/mfa is QUARANTINED - see QUARANTINE.md in this package. It does not build: pull requests were merged without resolving conflicts, leaving multiple implementations concatenated.')\"",
+    "test:coverage": "node -e \"console.log('packages/mfa is QUARANTINED - see QUARANTINE.md in this package. It does not build: pull requests were merged without resolving conflicts, leaving multiple implementations concatenated.')\"",
+    "lint": "node -e \"console.log('packages/mfa is QUARANTINED - see QUARANTINE.md in this package. It does not build: pull requests were merged without resolving conflicts, leaving multiple implementations concatenated.')\""
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "@verixa/database": "workspace:*",
     "@verixa/shared-kernel": "workspace:*"
   },
   "devDependencies": {
