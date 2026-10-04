@@ -43,7 +43,14 @@ function setup() {
     auditLogger,
   });
 
-  return { repository, assertionStore, auditLogger, verifyTotpChallenge, consumeBackupCode, useCase };
+  return {
+    repository,
+    assertionStore,
+    auditLogger,
+    verifyTotpChallenge,
+    consumeBackupCode,
+    useCase,
+  };
 }
 
 describe("StepUpAuthentication", () => {

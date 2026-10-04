@@ -1,10 +1,5 @@
 export type AttributeValue =
-  | string
-  | number
-  | boolean
-  | Date
-  | readonly AttributeValue[]
-  | AttributeRecord;
+  string | number | boolean | Date | readonly AttributeValue[] | AttributeRecord;
 
 export interface AttributeRecord {
   readonly [key: string]: AttributeValue;
@@ -25,7 +20,8 @@ const BAG_NAMES: readonly AttributeBagName[] = ["subject", "resource", "action",
 
 function cloneValue(value: AttributeValue): AttributeValue {
   if (value instanceof Date) return new Date(value.getTime());
-  if (Array.isArray(value)) return Object.freeze(value.map((item) => cloneValue(item)));
+  if (Array.isArray(value))
+    return Object.freeze((value as readonly AttributeValue[]).map((item) => cloneValue(item)));
   if (typeof value === "object") return cloneBag(value as AttributeRecord) as AttributeValue;
   return value;
 }
@@ -110,7 +106,20 @@ export class AttributeContext {
     bag: AttributeBagName,
     path: string,
     type: T,
-  ): Extract<AttributeValue, T extends "string" ? string : T extends "number" ? number : T extends "boolean" ? boolean : T extends "date" ? Date : readonly AttributeValue[]> | undefined {
+  ):
+    | Extract<
+        AttributeValue,
+        T extends "string"
+          ? string
+          : T extends "number"
+            ? number
+            : T extends "boolean"
+              ? boolean
+              : T extends "date"
+                ? Date
+                : readonly AttributeValue[]
+      >
+    | undefined {
     const value = this.get(bag, path);
     return value !== undefined && matchesType(value, type) ? (value as never) : undefined;
   }
@@ -173,6 +182,10 @@ export class AttributeContext {
     const key = path.slice(separatorIndex + 1);
     if (!BAG_NAMES.includes(bag as AttributeBagName)) return undefined;
 
-    return this.get(bag as AttributeBagName, key);
+    // A direct lookup, deliberately not `get()`. Only the first segment is a
+    // category; everything after it is one literal key, so an attribute
+    // genuinely named "metadata.key" resolves, where `get()` would try to
+    // walk into a nested "metadata" object that does not exist.
+    return this[bag as AttributeBagName][key];
   }
 }

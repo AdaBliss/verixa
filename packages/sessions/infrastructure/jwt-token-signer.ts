@@ -90,9 +90,7 @@ export class JwtTokenSigner implements TokenSigner {
     return this.cachedPublicKey;
   }
 
-  async sign(
-    params: IssueAccessTokenParams,
-  ): Promise<Result<SignedAccessToken, SigningError>> {
+  async sign(params: IssueAccessTokenParams): Promise<Result<SignedAccessToken, SigningError>> {
     try {
       const now = Math.floor(Date.now() / 1000);
       const expiresAt = Math.floor(params.expiresAt.getTime() / 1000);

@@ -55,9 +55,7 @@ export interface RecoverMfaAccessDeps {
 export class RecoverMfaAccess {
   constructor(private readonly deps: RecoverMfaAccessDeps) {}
 
-  async execute(
-    command: RecoverMfaAccessCommand,
-  ): Promise<Result<RecoverMfaAccessResult, Error>> {
+  async execute(command: RecoverMfaAccessCommand): Promise<Result<RecoverMfaAccessResult, Error>> {
     // A user cannot recover their own access this way; that would make the
     // authorization gate meaningless for anyone who has a valid session.
     if (command.actorId === command.targetUserId) {

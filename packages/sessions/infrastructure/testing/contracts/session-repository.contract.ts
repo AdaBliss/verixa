@@ -22,9 +22,7 @@ function makeSession(userId: UserId): Session {
  * each proven to behave identically rather than merely "compile against the
  * same interface." See `docs/guides/testing.md`.
  */
-export function sessionRepositoryContract(
-  createRepository: () => SessionRepository,
-): void {
+export function sessionRepositoryContract(createRepository: () => SessionRepository): void {
   describe("SessionRepository contract", () => {
     it("returns undefined for a session that was never saved", async () => {
       const repository = createRepository();
@@ -253,9 +251,7 @@ export function sessionRepositoryContract(
       const userId = makeUserId();
 
       // Should not throw.
-      await expect(
-        repository.revokeAllForUser(userId),
-      ).resolves.toBeUndefined();
+      await expect(repository.revokeAllForUser(userId)).resolves.toBeUndefined();
     });
 
     it("revokeAllForUser still revokes already-revoked sessions", async () => {
