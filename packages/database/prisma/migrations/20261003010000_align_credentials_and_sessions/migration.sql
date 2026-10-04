@@ -13,13 +13,14 @@
 ALTER TABLE "credentials"
     ALTER COLUMN "password_history" TYPE JSONB USING "password_history"::JSONB;
 
--- `sessions.user_id` had a relation in the schema but no foreign key in the
--- database, so nothing stopped a session referencing a user that does not
--- exist, and deleting a user left its sessions behind.
+-- `sessions.user_id` already had a foreign key, declared inline when the
+-- table was created, but without ON UPDATE CASCADE -- which is what the drift
+-- report was pointing at, not a missing constraint.
 --
--- CASCADE matches `credentials`: a session belonging to a deleted user is
--- unusable by definition, and retaining it keeps a record of who was signed
--- in from where after the account is gone.
+-- Dropped and recreated rather than altered, because Postgres has no ALTER
+-- for a constraint's referential actions.
+ALTER TABLE "sessions" DROP CONSTRAINT IF EXISTS "sessions_user_id_fkey";
+
 ALTER TABLE "sessions"
     ADD CONSTRAINT "sessions_user_id_fkey"
     FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
