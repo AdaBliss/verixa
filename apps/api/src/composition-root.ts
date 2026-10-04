@@ -34,6 +34,15 @@ import {
   UpdateUserProfile,
 } from "@verixa/identity";
 import {
+  InMemoryDomainEventPublisher,
+  InMemoryMfaMethodRepository,
+  InMemoryWebAuthnChallengeRepository,
+  InMemoryWebAuthnCredentialRepository,
+  RegisterWebAuthnCredential,
+  VerifyWebAuthnAssertion,
+  WebAuthnAssertionVerifier,
+  WebAuthnAttestationVerifier,
+} from "@verixa/mfa";
   InMemoryEventPublisher,
   NoopRateLimiter,
   type DomainEventPublisher,
@@ -133,12 +142,19 @@ export interface AuditUseCases {
   readonly anchor: AnchorAuditLog | undefined;
 }
 
+/** Multi-factor authentication use cases. */
+export interface MfaUseCases {
+  readonly registerWebAuthnCredential: RegisterWebAuthnCredential;
+  readonly verifyWebAuthnAssertion: VerifyWebAuthnAssertion;
+}
+
 export interface Container {
   readonly prisma: PrismaClient;
   readonly eventPublisher: DomainEventPublisher;
   readonly identity: IdentityUseCases;
   readonly credentials: CredentialUseCases;
   readonly audit: AuditUseCases;
+  readonly mfa: MfaUseCases;
   /** Releases the database connection. Call on shutdown. */
   readonly dispose: () => Promise<void>;
 }
@@ -221,12 +237,39 @@ export function buildContainer(prismaClient?: PrismaClient): Container {
       ? undefined
       : new StellarHashAnchor({ secretKey: anchorSecretKey, network: stellarNetwork });
 
-  // PrismaOrganizationRepository and PrismaOrganizationMembershipRepository
-  // aren't constructed here: the only use case that touches them
-  // (CreateOrganization) reaches them through the unit of work, since its two
-  // writes must commit together. Phase 12's read-only routes will need them
-  // directly, and that's when they get wired — building them now would mean
-  // an unused object graph pretending to be used.
+  // Multi-factor authentication (MFA) use cases and WebAuthn verifier adapters.
+  const webauthnRpId = process.env["WEBAUTHN_RP_ID"] ?? "localhost";
+  const webauthnOrigin = process.env["WEBAUTHN_ORIGIN"] ?? "http://localhost:3000";
+
+  const mfaMethodRepo = new InMemoryMfaMethodRepository();
+  const webAuthnCredentialRepo = new InMemoryWebAuthnCredentialRepository();
+  const webAuthnChallengeRepo = new InMemoryWebAuthnChallengeRepository();
+  const mfaEventPublisher = new InMemoryDomainEventPublisher();
+  const attestationVerifier = new WebAuthnAttestationVerifier();
+  const assertionVerifier = new WebAuthnAssertionVerifier();
+
+  const registerWebAuthnCredential = new RegisterWebAuthnCredential(
+    mfaMethodRepo,
+    webAuthnCredentialRepo,
+    webAuthnChallengeRepo,
+    attestationVerifier,
+    {
+      expectedOrigin: webauthnOrigin,
+      expectedRpId: webauthnRpId,
+    },
+  );
+
+  const verifyWebAuthnAssertion = new VerifyWebAuthnAssertion(
+    mfaMethodRepo,
+    webAuthnCredentialRepo,
+    webAuthnChallengeRepo,
+    assertionVerifier,
+    mfaEventPublisher,
+    {
+      expectedOrigin: webauthnOrigin,
+      expectedRpId: webauthnRpId,
+    },
+  );
 
   return {
     prisma,
@@ -286,6 +329,10 @@ export function buildContainer(prismaClient?: PrismaClient): Container {
         hashAnchor === undefined
           ? undefined
           : new AnchorAuditLog(auditLog, anchorRecords, hashAnchor),
+    },
+    mfa: {
+      registerWebAuthnCredential,
+      verifyWebAuthnAssertion,
     },
     dispose: async () => {
       await prisma.$disconnect();
