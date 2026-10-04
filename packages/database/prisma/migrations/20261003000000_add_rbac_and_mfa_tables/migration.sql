@@ -9,6 +9,15 @@
 -- Generated from the schema rather than written by hand, so it matches the
 -- models exactly.
 
+-- CreateEnum
+--
+-- The mfa_methods table below references these; they were introduced in the
+-- same unmigrated schema change.
+CREATE TYPE "mfa_method_type" AS ENUM ('totp', 'webauthn', 'backup-codes');
+
+-- CreateEnum
+CREATE TYPE "mfa_method_status" AS ENUM ('pending', 'active', 'disabled');
+
 -- CreateTable
 CREATE TABLE "roles" (
     "id" UUID NOT NULL,
