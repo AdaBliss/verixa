@@ -29,10 +29,14 @@ const CANONICAL_FORM_VERSION = "verixa-audit-v2";
  */
 export type AuditAction =
   | "user.registered"
+  | "user.email_verified"
+  | "user.password_changed"
+  | "user.status_changed"
+  | "user.profile_updated"
+  | "organization.invitation_created"
   | "user.login_succeeded"
   | "user.login_failed"
   | "user.locked_out"
-  | "user.email_verified"
   | "user.password_reset_requested"
   | "user.password_reset_completed";
 
