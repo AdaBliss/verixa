@@ -188,7 +188,11 @@ describe.skipIf(!available)("Credential cleanup on user deletion (Issue 075)", (
 
     expect(consumedAtFirstCall).toBeNull();
     expect(consumedAfterFirstCall).not.toBeNull();
-    expect(consumedAfterSecondCall).toBe(consumedAfterFirstCall);
+    // toStrictEqual, not toBe: these are two Date objects read back from
+    // separate queries, so they are equal in value and never the same
+    // instance. The point of the assertion is that the timestamp did not move
+    // on the second call, which is about value.
+    expect(consumedAfterSecondCall).toStrictEqual(consumedAfterFirstCall);
   });
 
   it("should ignore non-deletion status transitions", async () => {
