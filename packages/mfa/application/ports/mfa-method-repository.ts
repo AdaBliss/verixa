@@ -6,6 +6,7 @@ export interface MfaMethodRepository {
   save(method: MfaMethod): Promise<void>;
   findById(id: MfaMethodId): Promise<MfaMethod | null>;
   findByUserId(userId: Id<"UserId">): Promise<MfaMethod[]>;
+import type { MfaMethod, MfaMethodId } from "../../domain/entities/mfa-method.js";
 import type { MfaMethod, MfaMethodId, UserId } from "../../domain/entities/mfa-method.js";
 
 /**

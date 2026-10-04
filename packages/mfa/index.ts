@@ -2,6 +2,7 @@ export * from "./domain/value-objects/mfa-method-type.js";
 export * from "./domain/entities/mfa-method.js";
 export * from "./domain/entities/webauthn-credential.js";
 export * from "./domain/entities/webauthn-challenge.js";
+export * from "./domain/events/webauthn-clone-suspected.js";
 export * from "./application/ports/mfa-method-repository.js";
 export * from "./application/ports/webauthn-credential-repository.js";
 export * from "./application/ports/webauthn-challenge-repository.js";
@@ -11,6 +12,17 @@ export * from "./infrastructure/webauthn/attestation-verifier.js";
 export * from "./infrastructure/fakes/in-memory-mfa-method-repository.js";
 export * from "./infrastructure/fakes/in-memory-webauthn-credential-repository.js";
 export * from "./infrastructure/fakes/in-memory-webauthn-challenge-repository.js";
+export * from "./application/ports/assertion-verifier.js";
+export * from "./application/use-cases/register-webauthn-credential.js";
+export * from "./application/use-cases/verify-webauthn-assertion.js";
+export * from "./infrastructure/webauthn/attestation-verifier.js";
+export * from "./infrastructure/webauthn/assertion-verifier.js";
+export * from "./infrastructure/fakes/in-memory-mfa-method-repository.js";
+export * from "./infrastructure/fakes/in-memory-webauthn-credential-repository.js";
+export * from "./infrastructure/fakes/in-memory-webauthn-challenge-repository.js";
+export * from "./infrastructure/fakes/in-memory-domain-event-publisher.js";
+export { MfaMethod, type MfaMethodId, type MfaMethodStatus } from "./domain/entities/mfa-method.js";
+export { MfaMethodType, type MfaMethodTypeValue } from "./domain/value-objects/mfa-method-type.js";
 // Curated public surface of @verixa/mfa. Only this entrypoint may be imported
 // from outside the package (see docs/guides/domain-modeling.md).
 //
