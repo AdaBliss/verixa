@@ -209,19 +209,29 @@ export class AuditLogEntry {
    * row would edit the hash too. The check only means something when the
    * digest is derived again from the content.
    */
+  /**
+   * The hash this entry's *content* produces, recomputed from scratch.
+   *
+   * Distinct from {@link hash}, which is whatever the row happens to store.
+   * The two agree only while the record is intact, so anything comparing an
+   * entry against an external commitment must use this one -- comparing the
+   * stored hash to a ledger means comparing a tampered row's own claim about
+   * itself, which always agrees.
+   */
+  get recomputedHash(): string {
+    return AuditLogEntry.computeHash({
+      sequence: this.sequence,
+      action: this.action,
+      actorId: this.actorId,
+      subjectId: this.subjectId,
+      metadata: this.metadata,
+      occurredAt: this.occurredAt,
+      previousHash: this.previousHash,
+    });
+  }
+
   get hasValidHash(): boolean {
-    return (
-      this.hash ===
-      AuditLogEntry.computeHash({
-        sequence: this.sequence,
-        action: this.action,
-        actorId: this.actorId,
-        subjectId: this.subjectId,
-        metadata: this.metadata,
-        occurredAt: this.occurredAt,
-        previousHash: this.previousHash,
-      })
-    );
+    return this.hash === this.recomputedHash;
   }
 
   /**
