@@ -4,7 +4,9 @@ import {
   AnchorAuditLog,
   PrismaAnchorRecordRepository,
   PrismaAuditLogRepository,
+  QueryAuditEvents,
   RecordAuditEvent,
+  VerifyAuditChain,
 } from "@verixa/audit";
 import { loadConfig } from "@verixa/config";
 import {
@@ -31,7 +33,23 @@ import {
   SuspendUser,
   UpdateUserProfile,
 } from "@verixa/identity";
+import {
+  InMemoryDomainEventPublisher,
+  InMemoryMfaMethodRepository,
+  InMemoryWebAuthnChallengeRepository,
+  InMemoryWebAuthnCredentialRepository,
+  RegisterWebAuthnCredential,
+  VerifyWebAuthnAssertion,
+  WebAuthnAssertionVerifier,
+  WebAuthnAttestationVerifier,
+} from "@verixa/mfa";
+  InMemoryEventPublisher,
+  NoopRateLimiter,
+  type DomainEventPublisher,
+} from "@verixa/shared-kernel";
 import { StellarHashAnchor } from "@verixa/stellar-anchor";
+
+import { registerAuditSubscribers } from "./composition/register-audit-subscribers.js";
 
 /**
  * The composition root: the one place in the system allowed to know which
@@ -101,9 +119,18 @@ export interface CredentialUseCases {
   readonly confirmPasswordReset: ConfirmPasswordReset;
 }
 
-/** Audit recording and its external anchoring. */
+/** Audit recording, query, integrity verification and its external anchoring. */
 export interface AuditUseCases {
   readonly recordEvent: RecordAuditEvent;
+  readonly queryEvents: QueryAuditEvents;
+  /**
+   * Re-derives the hash chain and reports the first divergence.
+   *
+   * Wired here rather than left to the CLI alone, because the check is only a
+   * control if something can run it on a schedule; a tool a human has to
+   * remember to invoke is a tool that gets invoked after the incident.
+   */
+  readonly verifyChain: VerifyAuditChain;
   /**
    * Present only when an anchoring ledger is configured.
    *
@@ -115,11 +142,19 @@ export interface AuditUseCases {
   readonly anchor: AnchorAuditLog | undefined;
 }
 
+/** Multi-factor authentication use cases. */
+export interface MfaUseCases {
+  readonly registerWebAuthnCredential: RegisterWebAuthnCredential;
+  readonly verifyWebAuthnAssertion: VerifyWebAuthnAssertion;
+}
+
 export interface Container {
   readonly prisma: PrismaClient;
+  readonly eventPublisher: DomainEventPublisher;
   readonly identity: IdentityUseCases;
   readonly credentials: CredentialUseCases;
   readonly audit: AuditUseCases;
+  readonly mfa: MfaUseCases;
   /** Releases the database connection. Call on shutdown. */
   readonly dispose: () => Promise<void>;
 }
@@ -158,14 +193,40 @@ export function buildContainer(prismaClient?: PrismaClient): Container {
   // exist now is what stops "invalidate sessions on password reset" becoming
   // a step someone has to remember to add later — the most commonly missed
   // part of a reset flow.
+  //
+  // `NoopRateLimiter` always allows requests — rate limiting is Phase 15.
+  // It is wired as the default adapter so use cases work before the real
+  // limiter exists. No changes to use cases required when the real one
+  // arrives — only a new adapter and a new wire in composition root.
   const credentialNotifier = new NullCredentialNotifier();
   const sessionRevoker = new NoSessionsRevoker();
+  const rateLimiter = new NoopRateLimiter();
 
   // Audit recording. Failures are logged and never propagated -- see
   // RecordAuditEvent on why a failed audit write must not fail the operation
   // it was recording.
   const auditLog = new PrismaAuditLogRepository(prisma.auditLogEntry);
   const anchorRecords = new PrismaAnchorRecordRepository(prisma.anchorRecord, () => randomUUID());
+
+  const recordAuditEvent = new RecordAuditEvent(auditLog, (error: unknown) => {
+    // Written to stderr rather than swallowed entirely: a gap in the audit
+    // log is itself a security-relevant event, and the sequence gap it
+    // leaves is deliberately visible to `verifyChain`.
+    process.stderr.write(
+      `audit write failed: ${error instanceof Error ? error.message : String(error)}
+`,
+    );
+  });
+
+  // Domain event publisher, with every audit subscriber already on it.
+  //
+  // Registration is part of building the container rather than something a
+  // caller does afterwards, because the ordering is a correctness property, not
+  // a setup step: an event published with no subscriber attached is dropped
+  // permanently, and the first request a process serves is also the first
+  // event it publishes. See `composition/register-audit-subscribers.ts`.
+  const eventPublisher = new InMemoryEventPublisher();
+  registerAuditSubscribers(eventPublisher, recordAuditEvent);
 
   // Anchoring is wired only when a signing key is configured. See AuditUseCases
   // on why this is `undefined` rather than a no-op.
@@ -176,15 +237,43 @@ export function buildContainer(prismaClient?: PrismaClient): Container {
       ? undefined
       : new StellarHashAnchor({ secretKey: anchorSecretKey, network: stellarNetwork });
 
-  // PrismaOrganizationRepository and PrismaOrganizationMembershipRepository
-  // aren't constructed here: the only use case that touches them
-  // (CreateOrganization) reaches them through the unit of work, since its two
-  // writes must commit together. Phase 12's read-only routes will need them
-  // directly, and that's when they get wired — building them now would mean
-  // an unused object graph pretending to be used.
+  // Multi-factor authentication (MFA) use cases and WebAuthn verifier adapters.
+  const webauthnRpId = process.env["WEBAUTHN_RP_ID"] ?? "localhost";
+  const webauthnOrigin = process.env["WEBAUTHN_ORIGIN"] ?? "http://localhost:3000";
+
+  const mfaMethodRepo = new InMemoryMfaMethodRepository();
+  const webAuthnCredentialRepo = new InMemoryWebAuthnCredentialRepository();
+  const webAuthnChallengeRepo = new InMemoryWebAuthnChallengeRepository();
+  const mfaEventPublisher = new InMemoryDomainEventPublisher();
+  const attestationVerifier = new WebAuthnAttestationVerifier();
+  const assertionVerifier = new WebAuthnAssertionVerifier();
+
+  const registerWebAuthnCredential = new RegisterWebAuthnCredential(
+    mfaMethodRepo,
+    webAuthnCredentialRepo,
+    webAuthnChallengeRepo,
+    attestationVerifier,
+    {
+      expectedOrigin: webauthnOrigin,
+      expectedRpId: webauthnRpId,
+    },
+  );
+
+  const verifyWebAuthnAssertion = new VerifyWebAuthnAssertion(
+    mfaMethodRepo,
+    webAuthnCredentialRepo,
+    webAuthnChallengeRepo,
+    assertionVerifier,
+    mfaEventPublisher,
+    {
+      expectedOrigin: webauthnOrigin,
+      expectedRpId: webauthnRpId,
+    },
+  );
 
   return {
     prisma,
+    eventPublisher,
     identity: {
       registerUser: new RegisterUser(users),
       updateUserProfile: new UpdateUserProfile(users),
@@ -196,38 +285,54 @@ export function buildContainer(prismaClient?: PrismaClient): Container {
       inviteUserToOrganization: new InviteUserToOrganization(invitations),
     },
     credentials: {
-      registerUserWithPassword: new RegisterUserWithPassword(credentialsUnitOfWork, passwordHasher),
+      registerUserWithPassword: new RegisterUserWithPassword(
+        credentialsUnitOfWork,
+        passwordHasher,
+        rateLimiter,
+      ),
       // Shares the hasher instance with registration deliberately. Beyond
       // avoiding a second allocation, the timing decoy that hides whether an
       // account exists is cached per hasher, so a second instance would build
       // its own on the first failed login.
-      authenticateWithPassword: new AuthenticateWithPassword(credentialsUnitOfWork, passwordHasher),
+      authenticateWithPassword: new AuthenticateWithPassword(
+        credentialsUnitOfWork,
+        passwordHasher,
+        rateLimiter,
+      ),
       requestEmailVerification: new RequestEmailVerification(
         credentialsUnitOfWork,
         credentialNotifier,
       ),
       confirmEmailVerification: new ConfirmEmailVerification(credentialsUnitOfWork),
-      requestPasswordReset: new RequestPasswordReset(credentialsUnitOfWork, credentialNotifier),
+      requestPasswordReset: new RequestPasswordReset(
+        credentialsUnitOfWork,
+        credentialNotifier,
+        rateLimiter,
+      ),
       confirmPasswordReset: new ConfirmPasswordReset(
         credentialsUnitOfWork,
         passwordHasher,
         sessionRevoker,
+        rateLimiter,
       ),
     },
     audit: {
-      recordEvent: new RecordAuditEvent(auditLog, (error: unknown) => {
-        // Written to stderr rather than swallowed entirely: a gap in the audit
-        // log is itself a security-relevant event, and the sequence gap it
-        // leaves is deliberately visible to `verifyChain`.
-        process.stderr.write(
-          `audit write failed: ${error instanceof Error ? error.message : String(error)}
-`,
-        );
-      }),
+      recordEvent: recordAuditEvent,
+      queryEvents: new QueryAuditEvents(auditLog),
+      // Verification is given the same ledger the anchor use case uses, so a
+      // deployment that anchors gets the independent ledger check for free and
+      // one that does not still gets the local re-derivation. `undefined` is
+      // honest here in the other direction: `VerifyAuditChain` reports
+      // `anchorsSkipped` rather than quietly returning an empty receipt list.
+      verifyChain: new VerifyAuditChain(auditLog, anchorRecords, hashAnchor),
       anchor:
         hashAnchor === undefined
           ? undefined
           : new AnchorAuditLog(auditLog, anchorRecords, hashAnchor),
+    },
+    mfa: {
+      registerWebAuthnCredential,
+      verifyWebAuthnAssertion,
     },
     dispose: async () => {
       await prisma.$disconnect();
