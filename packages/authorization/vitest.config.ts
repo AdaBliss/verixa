@@ -7,6 +7,15 @@ export default mergeConfig(
   defineConfig({
     test: {
       name: "@verixa/authorization",
+      coverage: {
+        exclude: ["**/application/ports/**", "index.ts"],
+        thresholds: {
+          statements: 90,
+          lines: 90,
+          functions: 85,
+          branches: 85,
+        },
+      },
     },
   }),
 );
