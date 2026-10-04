@@ -10,6 +10,12 @@ export {
   GENESIS_HASH,
   verifyChain,
 } from "./domain/entities/audit-log-entry.js";
+export {
+  AUDIT_PERMISSIONS,
+  AuditAccessDeniedError,
+  type AuditReader,
+  type AuditReadOperation,
+} from "./domain/policies/audit-access-policy.js";
 
 // Domain: AuditEvent (Phase 10 structured audit events)
 export { AuditEvent, type AuditEventId } from "./domain/entities/audit-event.js";
@@ -45,6 +51,11 @@ export type {
   FindWithFiltersParams,
   HashAnchorPort,
 } from "./application/ports/audit-log-repository.js";
+export type {
+  AuditEventCriteria,
+  AuditEventPage,
+  AuditEventReader,
+} from "./application/ports/audit-event-reader.js";
 
 // Application: ports (AuditEventRepository - Phase 10)
 export type {
@@ -71,6 +82,15 @@ export {
   type RecordAuditEventCommand,
 } from "./application/use-cases/record-audit-event.js";
 export {
+  MAX_AUDIT_QUERY_PAGE_SIZE,
+  QueryAuditEvents,
+  type QueryAuditEventsCommand,
+} from "./application/use-cases/query-audit-events.js";
+export {
+  ExportAuditEvents,
+  type ExportAuditEventsCommand,
+} from "./application/use-cases/export-audit-events.js";
+export { type AuditReadError, AuditReadNotRecordedError } from "./application/audit-read-access.js";
   AUDIT_EXPORT_HEADER,
   DEFAULT_EXPORT_MAX_RECORDS,
   ExportAuditEvents,
@@ -135,6 +155,7 @@ export {
 } from "./infrastructure/persistence/prisma-audit-repositories.js";
 export {
   InMemoryAnchorRecordRepository,
+  InMemoryAuditEventReader,
   InMemoryAuditLogRepository,
 } from "./infrastructure/testing/in-memory-audit-repositories.js";
 export {
