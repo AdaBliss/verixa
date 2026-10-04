@@ -2,14 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import {
   AnchorAuditLog,
-  PermissionGrantedAuditSubscriber,
   PrismaAnchorRecordRepository,
   PrismaAuditLogRepository,
   QueryAuditEvents,
   RecordAuditEvent,
-  RoleAssignedAuditSubscriber,
-  SessionCreatedAuditSubscriber,
-  SessionRevokedAuditSubscriber,
+  VerifyAuditChain,
 } from "@verixa/audit";
 import { loadConfig } from "@verixa/config";
 import {
@@ -43,6 +40,23 @@ import {
   type StellarNetwork,
   type TransactionSigner,
 } from "@verixa/stellar-anchor";
+import {
+  InMemoryDomainEventPublisher,
+  InMemoryMfaMethodRepository,
+  InMemoryWebAuthnChallengeRepository,
+  InMemoryWebAuthnCredentialRepository,
+  RegisterWebAuthnCredential,
+  VerifyWebAuthnAssertion,
+  WebAuthnAssertionVerifier,
+  WebAuthnAttestationVerifier,
+} from "@verixa/mfa";
+  InMemoryEventPublisher,
+  NoopRateLimiter,
+  type DomainEventPublisher,
+} from "@verixa/shared-kernel";
+import { StellarHashAnchor } from "@verixa/stellar-anchor";
+
+import { registerAuditSubscribers } from "./composition/register-audit-subscribers.js";
 
 /**
  * The composition root: the one place in the system allowed to know which
@@ -199,10 +213,18 @@ export interface CredentialUseCases {
   readonly confirmPasswordReset: ConfirmPasswordReset;
 }
 
-/** Audit recording and its external anchoring. */
+/** Audit recording, query, integrity verification and its external anchoring. */
 export interface AuditUseCases {
   readonly recordEvent: RecordAuditEvent;
   readonly queryEvents: QueryAuditEvents;
+  /**
+   * Re-derives the hash chain and reports the first divergence.
+   *
+   * Wired here rather than left to the CLI alone, because the check is only a
+   * control if something can run it on a schedule; a tool a human has to
+   * remember to invoke is a tool that gets invoked after the incident.
+   */
+  readonly verifyChain: VerifyAuditChain;
   /**
    * Present only when an anchoring ledger is configured.
    *
@@ -212,6 +234,12 @@ export interface AuditUseCases {
    * when nothing has ever been committed anywhere.
    */
   readonly anchor: AnchorAuditLog | undefined;
+}
+
+/** Multi-factor authentication use cases. */
+export interface MfaUseCases {
+  readonly registerWebAuthnCredential: RegisterWebAuthnCredential;
+  readonly verifyWebAuthnAssertion: VerifyWebAuthnAssertion;
 }
 
 export interface Container {
@@ -224,6 +252,8 @@ export interface Container {
    * Drains any queued audit writes, then releases the database connection.
    * Call on shutdown.
    */
+  readonly mfa: MfaUseCases;
+  /** Releases the database connection. Call on shutdown. */
   readonly dispose: () => Promise<void>;
 }
 
@@ -306,22 +336,15 @@ export function buildContainer(
     );
   });
 
-  // Domain event publisher with audit subscribers (Phase 10, Issue 186).
-  // Subscribe to session lifecycle events (SessionCreated, SessionRevoked from Phase 05)
-  // and RBAC events (RoleAssigned, PermissionGranted from Phase 07).
+  // Domain event publisher, with every audit subscriber already on it.
+  //
+  // Registration is part of building the container rather than something a
+  // caller does afterwards, because the ordering is a correctness property, not
+  // a setup step: an event published with no subscriber attached is dropped
+  // permanently, and the first request a process serves is also the first
+  // event it publishes. See `composition/register-audit-subscribers.ts`.
   const eventPublisher = new InMemoryEventPublisher();
-
-  // Session audit subscribers
-  const sessionCreatedSubscriber = new SessionCreatedAuditSubscriber(recordAuditEvent);
-  const sessionRevokedSubscriber = new SessionRevokedAuditSubscriber(recordAuditEvent);
-  eventPublisher.subscribe("sessions.session.created", (event) => sessionCreatedSubscriber.handle(event));
-  eventPublisher.subscribe("sessions.session.revoked", (event) => sessionRevokedSubscriber.handle(event));
-
-  // RBAC audit subscribers
-  const roleAssignedSubscriber = new RoleAssignedAuditSubscriber(recordAuditEvent);
-  const permissionGrantedSubscriber = new PermissionGrantedAuditSubscriber(recordAuditEvent);
-  eventPublisher.subscribe("rbac.role.assigned", (event) => roleAssignedSubscriber.handle(event));
-  eventPublisher.subscribe("rbac.permission.granted", (event) => permissionGrantedSubscriber.handle(event));
+  registerAuditSubscribers(eventPublisher, recordAuditEvent);
 
   // Anchoring is wired only when a signing key is configured. See AuditUseCases
   // on why this is `undefined` rather than a no-op.
@@ -331,12 +354,39 @@ export function buildContainer(
   const hashAnchor =
     signer === undefined ? undefined : new StellarHashAnchor({ signer, network: stellarNetwork });
 
-  // PrismaOrganizationRepository and PrismaOrganizationMembershipRepository
-  // aren't constructed here: the only use case that touches them
-  // (CreateOrganization) reaches them through the unit of work, since its two
-  // writes must commit together. Phase 12's read-only routes will need them
-  // directly, and that's when they get wired — building them now would mean
-  // an unused object graph pretending to be used.
+  // Multi-factor authentication (MFA) use cases and WebAuthn verifier adapters.
+  const webauthnRpId = process.env["WEBAUTHN_RP_ID"] ?? "localhost";
+  const webauthnOrigin = process.env["WEBAUTHN_ORIGIN"] ?? "http://localhost:3000";
+
+  const mfaMethodRepo = new InMemoryMfaMethodRepository();
+  const webAuthnCredentialRepo = new InMemoryWebAuthnCredentialRepository();
+  const webAuthnChallengeRepo = new InMemoryWebAuthnChallengeRepository();
+  const mfaEventPublisher = new InMemoryDomainEventPublisher();
+  const attestationVerifier = new WebAuthnAttestationVerifier();
+  const assertionVerifier = new WebAuthnAssertionVerifier();
+
+  const registerWebAuthnCredential = new RegisterWebAuthnCredential(
+    mfaMethodRepo,
+    webAuthnCredentialRepo,
+    webAuthnChallengeRepo,
+    attestationVerifier,
+    {
+      expectedOrigin: webauthnOrigin,
+      expectedRpId: webauthnRpId,
+    },
+  );
+
+  const verifyWebAuthnAssertion = new VerifyWebAuthnAssertion(
+    mfaMethodRepo,
+    webAuthnCredentialRepo,
+    webAuthnChallengeRepo,
+    assertionVerifier,
+    mfaEventPublisher,
+    {
+      expectedOrigin: webauthnOrigin,
+      expectedRpId: webauthnRpId,
+    },
+  );
 
   return {
     prisma,
@@ -386,10 +436,20 @@ export function buildContainer(
     audit: {
       recordEvent: recordAuditEvent,
       queryEvents: new QueryAuditEvents(auditLog),
+      // Verification is given the same ledger the anchor use case uses, so a
+      // deployment that anchors gets the independent ledger check for free and
+      // one that does not still gets the local re-derivation. `undefined` is
+      // honest here in the other direction: `VerifyAuditChain` reports
+      // `anchorsSkipped` rather than quietly returning an empty receipt list.
+      verifyChain: new VerifyAuditChain(auditLog, anchorRecords, hashAnchor),
       anchor:
         hashAnchor === undefined
           ? undefined
           : new AnchorAuditLog(auditLog, anchorRecords, hashAnchor),
+    },
+    mfa: {
+      registerWebAuthnCredential,
+      verifyWebAuthnAssertion,
     },
     dispose: async () => {
       // Drained *before* disconnecting, and only because the batched writer
