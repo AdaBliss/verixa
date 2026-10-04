@@ -65,7 +65,7 @@ export class AttributeResolutionPipeline {
       };
     }
 
-    return { context: new AttributeContext(bags), failures: Object.freeze(failures) };
+    return { context: AttributeContext.create(bags), failures: Object.freeze(failures) };
   }
 }
 

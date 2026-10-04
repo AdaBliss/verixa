@@ -7,47 +7,34 @@ export default mergeConfig(
   defineConfig({
     test: {
       name: "@verixa/sessions",
-      coverage: {
-        exclude: [
-          "**/application/ports/**",
-          "index.ts",
-          "**/infrastructure/persistence/**",
-          "**/infrastructure/testing/database-harness.ts",
 
       /**
        * The Redis integration spec starts a Testcontainers container, which
        * can take longer than vitest's default 5s hook timeout on a cold image
        * pull. The database-backed packages get away with the default because
        * CI hands them an already-running service; there is no Redis service
-       * yet on every path this suite runs, so it may fall back to starting one.
+       * on every path this suite runs, so it may fall back to starting one.
        */
       hookTimeout: 120_000,
+
       coverage: {
         // Interface-only files have no executable statements to cover — a
         // TypeScript `interface` is erased entirely at compile time, so
         // there's nothing a test could ever exercise. Including them would
-        // either drag the ratio down for no real signal or (as observed)
-        // report a meaningless 0% for a file with zero total statements.
+        // either drag the ratio down for no real signal or report a
+        // meaningless 0% for a file with zero total statements.
         exclude: [
           "**/application/ports/**",
           "index.ts",
-          // Database adapters are covered by the contract suite in
-          // prisma-repositories.spec.ts, which runs only where a real
-          // Postgres is available. Counting them here would mean the gate
-          // measures "was a database present" rather than "is this code
-          // tested" — it would fail on a developer machine without Docker
-          // while passing in CI, for the same commit. The coverage that
-          // matters for these files is enforced by the contract suite
-          // itself, which CI requires via REQUIRE_DATABASE_TESTS=1.
+          // Database adapters are covered by their contract suite, which runs
+          // only where a real Postgres is available. Counting them here would
+          // mean the gate measures "was a database present" rather than "is
+          // this code tested" — failing on a developer machine without Docker
+          // while passing in CI, for the same commit.
           "**/infrastructure/persistence/**",
           "**/infrastructure/testing/database-harness.ts",
-          // A benchmark, not library code. It needs a live Postgres, is run
-          // by hand when a performance question comes up, and is never
-          // imported by anything that ships. Counted, its 180 lines pulled
-          // the package from ~96% to 87.5% and failed the gate — which would
-          // have read as a coverage regression in the domain layer when
-          // nothing in the domain layer had changed. The gate is here to say
-          // something about code consumers depend on.
+          // Benchmarks and operational scripts: run by hand, never imported
+          // by anything that ships.
           "**/scripts/**",
         ],
         thresholds: {

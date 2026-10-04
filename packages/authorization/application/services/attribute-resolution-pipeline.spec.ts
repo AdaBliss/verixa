@@ -24,8 +24,8 @@ function provider(
 describe("AttributeResolutionPipeline", () => {
   it("merges in order, with later providers overriding leaves", async () => {
     const pipeline = new AttributeResolutionPipeline([
-      provider("claims", new AttributeContext({ subject: { id: "unverified", roles: ["reader"] }, resource: { owner: { id: "user-1" } } })),
-      provider("identity", new AttributeContext({ subject: { id: "user-1", active: true }, resource: { owner: { verified: true } } })),
+      provider("claims", AttributeContext.create({ subject: { id: "unverified", roles: ["reader"] }, resource: { owner: { id: "user-1" } } })),
+      provider("identity", AttributeContext.create({ subject: { id: "user-1", active: true }, resource: { owner: { verified: true } } })),
     ]);
 
     const { context } = await pipeline.resolve(request);
@@ -41,7 +41,7 @@ describe("AttributeResolutionPipeline", () => {
       provider("optional-enrichment", async () => {
         throw new Error("service unavailable");
       }, "fail-open"),
-      provider("identity", new AttributeContext({ subject: { id: "user-1" } })),
+      provider("identity", AttributeContext.create({ subject: { id: "user-1" } })),
     ]);
 
     const result = await pipeline.resolve(request);
@@ -61,11 +61,11 @@ describe("AttributeResolutionPipeline", () => {
   });
 
   it("validates provider names and rejects duplicates", () => {
-    expect(() => new AttributeResolutionPipeline([provider("", new AttributeContext())])).toThrow();
+    expect(() => new AttributeResolutionPipeline([provider("", AttributeContext.create({}))])).toThrow();
     expect(() =>
       new AttributeResolutionPipeline([
-        provider("identity", new AttributeContext()),
-        provider("identity", new AttributeContext()),
+        provider("identity", AttributeContext.create({})),
+        provider("identity", AttributeContext.create({})),
       ]),
     ).toThrow("Duplicate attribute provider: identity");
   });
